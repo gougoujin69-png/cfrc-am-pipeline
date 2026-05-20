@@ -1,0 +1,61 @@
+# MATLAB
+*.asv
+*.m~
+*.mexa64
+*.mexw64
+*.mexmaci64
+slprj/
+sccprj/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+
+# Abaqus 中间产物
+*.com
+*.dat
+*.log
+*.msg
+*.odb
+*.prt
+*.res
+*.sim
+*.sta
+*.sel
+*.stt
+*.par
+*.pes
+*.pmg
+*.lck
+*.mdl
+*.fil
+*.inp.bak
+*.rec
+
+# 体素化中间产物
+*.npz
+voxel_grid.inp
+
+# 输出 / 大文件
+*.mat
+*.csv
+*.png
+*.jpg
+*.tif
+*.tiff
+path_stats_output/
+results/
+*/beam_paths/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
