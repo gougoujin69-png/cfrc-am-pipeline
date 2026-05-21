@@ -228,6 +228,7 @@ matlab -batch "voxel_refinement_from_test; generate_reference_surface; \
 |---|---|
 | `display_3D2.m` | 通用 3D 显示 |
 | `display_fiber_tubes_v3.m` | 纤维路径渲染成管状 3D |
+| `display_fiber_tubes_interactive.m` | **交互式 4-way 路径对比 viewer**（共享体素背景与 BC 标记，含层范围/管径/Z 间距/视角滑条，"SAVE all 4" 用同一相机视角同时导出 4 张图） |
 | `display_mesh_with_paths.m` | 网格+路径叠加渲染 |
 | `fiber_show.m` | 纤维方向场可视化 |
 | `Path_show_carbon.m` / `Path_show_resin.m` | 碳纤维 / 树脂路径可视化 |
