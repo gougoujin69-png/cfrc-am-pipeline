@@ -90,7 +90,7 @@ fprintf('  t_xoz: [%s], range [%.4f, %.4f]\n', mat2str(size(t_xoz)), min(t_xoz(:
 %% ========== Step 3: Parameters ==========
 fprintf('\n[Step 3] Configuration...\n');
 
-REFINE_FACTOR = 1;
+REFINE_FACTOR = 3;
 INTERP_METHOD = 'linear';
 USE_SMOOTHING = true;
 SMOOTH_SIGMA = 0.5;
@@ -171,9 +171,11 @@ Z_orig = Z_orig - 0.5;
 
 % Fine grid coordinates
 sub_step = 1.0 / REFINE_FACTOR;
-x_fine = (-0.5 + sub_step/2) : sub_step : (nelx - 0.5 + sub_step/2);
-y_fine = (-0.5 + sub_step/2) : sub_step : (nely - 0.5 + sub_step/2);
-z_fine = (-0.5 + sub_step/2) : sub_step : (nelz - 0.5 + sub_step/2);
+% 修正后：起点为 sub_step/2，对齐原始采样的 [0.5, nelx-0.5] 区间
+x_fine = (sub_step/2) : sub_step : (nelx - sub_step/2);
+y_fine = (sub_step/2) : sub_step : (nely - sub_step/2);
+z_fine = (sub_step/2) : sub_step : (nelz - sub_step/2);
+% 后面 x_fine = x_fine(1:nelx_fine); 这三行就可以删掉了（长度已对）
 x_fine = x_fine(1:nelx_fine);
 y_fine = y_fine(1:nely_fine);
 z_fine = z_fine(1:nelz_fine);
