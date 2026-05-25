@@ -304,6 +304,7 @@ w = +sin(t_xoz)                ← 注意是 +，不是 −
 | compute_path_statistics | w 符号修正为 `+sind(t_xoz)`；支持嵌套 `refined_data.grid_data` 结构数组 |
 | compute_path_statistics | 应力查询用 mask 跳过网格外位置 |
 | abaqus_odb_to_mat | `t_xoz` 用 `+asin(dz)`（匹配 `step3_extract_stress.py` 历史约定） |
+| voxel_refinement + extract_layer_2d_projection | 启用 `REFINE_FACTOR=3`：fine grid 去掉 `-0.5` 偏移以对齐原始采样 `[0.5, nelx-0.5]`；2D 投影改用 `grid_index` 整数下标（物理坐标 `.x/.y` 在 refine≥2 时非整数无法作数组下标） |
 
 ---
 
