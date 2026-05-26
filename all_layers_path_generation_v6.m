@@ -1,3 +1,4 @@
+function all_layers_path_generation_v6(slice_file, output_file, full_results_file)
 %% ========================================
 %% 全层路径生成 V6 — 结构遮罩裁剪 + parfor 并行
 %% ========================================
@@ -7,9 +8,28 @@
 %   [NEW-3] 3D 路径点级裁剪 (isinterior)
 %   [NEW-4] parfor 多层并行 (cell 数组存储, 避免 struct 赋值限制)
 %   保留 v5b 所有修复: polybuffer 外扩, 膨胀, xold>0 等
+%
+% 输入 (可选):
+%   slice_file        - 切片 mat 路径 (默认 'slice_results_refined_latest.mat')
+%                       可以是 _PLANAR 版本以跑 planar_stream 对照组
+%   output_file       - paths_only 输出 mat (默认 'all_layers_paths_only_v3.mat')
+%   full_results_file - 完整 results 输出 mat (默认 'all_layers_path_results_v3.mat')
+%
+% 用法:
+%   all_layers_path_generation_v6();                                       % 默认
+%   all_layers_path_generation_v6('slice_results_refined_latest_PLANAR.mat', ...
+%                                 'all_layers_paths_only_planar_stream.mat');
 %%
 
-clear; clc; close all;
+if nargin < 1 || isempty(slice_file)
+    slice_file = 'slice_results_refined_latest.mat';
+end
+if nargin < 2 || isempty(output_file)
+    output_file = 'all_layers_paths_only_v3.mat';
+end
+if nargin < 3 || isempty(full_results_file)
+    full_results_file = 'all_layers_path_results_v3.mat';
+end
 
 warning('off', 'MATLAB:polyshape:repairedBySimplify');
 warning('off', 'MATLAB:polyshape:boundary3Points');
@@ -17,6 +37,8 @@ warning('off', 'MATLAB:polyshape:boundary3Points');
 fprintf('\n');
 fprintf('================================================================\n');
 fprintf('  全层路径生成 V6 — 结构遮罩 + parfor\n');
+fprintf('  Slice input : %s\n', slice_file);
+fprintf('  Paths output: %s\n', output_file);
 fprintf('================================================================\n\n');
 
 %% ========== 参数设置 ==========
@@ -64,7 +86,6 @@ end
 %% ========== Step 2: 加载切片数据 ==========
 fprintf('\n[Step 2] Loading slice data...\n');
 
-slice_file = 'slice_results_refined_latest.mat';
 if ~exist(slice_file, 'file')
     error('%s not found', slice_file);
 end
@@ -310,8 +331,8 @@ results.total_statistics = struct(...
     'failed_layers', failed_layers, 'total_time', total_time);
 results.version = 'v6_structure_mask_parfor';
 
-save('all_layers_path_results_v3.mat', 'results', '-v7.3');
-fprintf('  Saved: all_layers_path_results_v3.mat\n');
+save(full_results_file, 'results', '-v7.3');
+fprintf('  Saved: %s\n', full_results_file);
 
 paths_only = struct();
 paths_only.num_layers = num_layers;
@@ -337,8 +358,8 @@ for i = 1:num_layers
     end
 end
 
-save('all_layers_paths_only_v3.mat', 'paths_only', '-v7.3');
-fprintf('  Saved: all_layers_paths_only_v3.mat\n');
+save(output_file, 'paths_only', '-v7.3');
+fprintf('  Saved: %s\n', output_file);
 
 %% ========== 最终统计 ==========
 fprintf('\n================================================================\n');
@@ -361,6 +382,8 @@ end
 warning('on', 'MATLAB:polyshape:repairedBySimplify');
 warning('on', 'MATLAB:polyshape:boundary3Points');
 fprintf('\n  Done!\n');
+
+end % function all_layers_path_generation_v6
 
 
 %% ================================================================
@@ -426,10 +449,14 @@ function layer_result = process_single_layer(...
         num_grids = length(activated_grids);
         actual_x = zeros(num_grids, 1);
         actual_y = zeros(num_grids, 1);
+        actual_ix = zeros(num_grids, 1);
+        actual_iy = zeros(num_grids, 1);
         for i = 1:num_grids
             g = activated_grids(i);
             actual_x(i) = g.x;
             actual_y(i) = g.y;
+            actual_ix(i) = g.grid_index(1);
+            actual_iy(i) = g.grid_index(2);
         end
         
         actual_x_min = min(actual_x);
@@ -438,8 +465,34 @@ function layer_result = process_single_layer(...
         actual_y_max = max(actual_y);
         actual_range = max(actual_x_max - actual_x_min, actual_y_max - actual_y_min);
         adaptive_min_outer = max(actual_range * 0.05, 1.5);
-        scale_x = (actual_x_max - actual_x_min) / max(nelx - 1, 1);
-        scale_y = (actual_y_max - actual_y_min) / max(nely - 1, 1);
+
+        % --- [FIX] pixel<->physical 映射必须用真实的物理 cell 尺寸 ---
+        % 旧版用 scale_x = (actual_x_max - actual_x_min) / (nelx - 1), 这只有在
+        % 激活 voxel 在 X 方向跨满全网格时才正确. 当结构在 X 中段窄 (拓扑优化
+        % 常见) 时, 这个 scale 比真实 dx_phys 小, 路径会被 X 方向压缩.
+        % 修复: 从同层任意两个 ix 不同的 activated grids 反推 dx_phys 和原点.
+        [ix_min_val, p_ix_min] = min(actual_ix);
+        [ix_max_val, p_ix_max] = max(actual_ix);
+        if ix_max_val > ix_min_val
+            dx_phys = (actual_x(p_ix_max) - actual_x(p_ix_min)) / ...
+                      (ix_max_val - ix_min_val);
+            grid_x_origin = actual_x(p_ix_min) - (ix_min_val - 1) * dx_phys;
+        else
+            dx_phys = 1.0;
+            grid_x_origin = actual_x_min;  % 退化: 只有一个 ix
+        end
+        [iy_min_val, p_iy_min] = min(actual_iy);
+        [iy_max_val, p_iy_max] = max(actual_iy);
+        if iy_max_val > iy_min_val
+            dy_phys = (actual_y(p_iy_max) - actual_y(p_iy_min)) / ...
+                      (iy_max_val - iy_min_val);
+            grid_y_origin = actual_y(p_iy_min) - (iy_min_val - 1) * dy_phys;
+        else
+            dy_phys = 1.0;
+            grid_y_origin = actual_y_min;
+        end
+        scale_x = dx_phys;
+        scale_y = dy_phys;
         expand_dist = max(scale_x, scale_y) * params.contour_expand_ratio;
         
         %% === 步骤4: 方向场滤波 ===
@@ -467,8 +520,8 @@ function layer_result = process_single_layer(...
                     if x_filter(row, col) == 0, continue; end
                     
                     % 像素 → 实际坐标
-                    px = actual_x_min + (col - 1) * scale_x;
-                    py = actual_y_min + (row - 1) * scale_y;
+                    px = grid_x_origin + (col - 1) * scale_x;
+                    py = grid_y_origin + (row - 1) * scale_y;
                     
                     % XY 越界检查
                     if has_structure_mask
@@ -537,8 +590,8 @@ function layer_result = process_single_layer(...
                 bnd(:,1) = smooth(bnd(:,1), 3);
                 bnd(:,2) = smooth(bnd(:,2), 3);
             end
-            x_actual = actual_x_min + (bnd(:, 2) - 1) * scale_x;
-            y_actual = actual_y_min + (bnd(:, 1) - 1) * scale_y;
+            x_actual = grid_x_origin + (bnd(:, 2) - 1) * scale_x;
+            y_actual = grid_y_origin + (bnd(:, 1) - 1) * scale_y;
             contour_pts = [x_actual(:), y_actual(:)];
             contour_pts = expand_contour(contour_pts, expand_dist);
             contour_length = sum(sqrt(sum(diff(contour_pts).^2, 2)));
@@ -563,8 +616,8 @@ function layer_result = process_single_layer(...
                 bnd(:,1) = smooth(bnd(:,1), 3);
                 bnd(:,2) = smooth(bnd(:,2), 3);
             end
-            x_actual = actual_x_min + (bnd(:, 2) - 1) * scale_x;
-            y_actual = actual_y_min + (bnd(:, 1) - 1) * scale_y;
+            x_actual = grid_x_origin + (bnd(:, 2) - 1) * scale_x;
+            y_actual = grid_y_origin + (bnd(:, 1) - 1) * scale_y;
             contour_pts = [x_actual(:), y_actual(:)];
             contour_length = sum(sqrt(sum(diff(contour_pts).^2, 2)));
             if contour_length >= params.min_contour_length_inner
@@ -578,8 +631,8 @@ function layer_result = process_single_layer(...
         [y_skel, x_skel] = find(skeleton_clean);
         
         if ~isempty(x_skel)
-            x_skel_actual = actual_x_min + (x_skel - 1) * scale_x;
-            y_skel_actual = actual_y_min + (y_skel - 1) * scale_y;
+            x_skel_actual = grid_x_origin + (x_skel - 1) * scale_x;
+            y_skel_actual = grid_y_origin + (y_skel - 1) * scale_y;
             medial_axis = [x_skel_actual(:), y_skel_actual(:)];
         else
             medial_axis = [];
@@ -593,8 +646,8 @@ function layer_result = process_single_layer(...
         for k = 1:length(streamlines_raw)
             sl = streamlines_raw{k};
             if isempty(sl) || size(sl, 1) < 3, continue; end
-            x_actual = actual_x_min + (sl(:, 1) - 1) * scale_x;
-            y_actual = actual_y_min + (sl(:, 2) - 1) * scale_y;
+            x_actual = grid_x_origin + (sl(:, 1) - 1) * scale_x;
+            y_actual = grid_y_origin + (sl(:, 2) - 1) * scale_y;
             streamlines{end+1} = [x_actual(:), y_actual(:)];
         end
         

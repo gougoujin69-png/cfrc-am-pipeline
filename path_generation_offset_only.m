@@ -239,12 +239,40 @@ try
     num_grids = length(activated_grids);
     actual_x = arrayfun(@(g) g.x, activated_grids);
     actual_y = arrayfun(@(g) g.y, activated_grids);
+    actual_ix = arrayfun(@(g) g.grid_index(1), activated_grids);
+    actual_iy = arrayfun(@(g) g.grid_index(2), activated_grids);
     actual_x_min = min(actual_x); actual_x_max = max(actual_x);
     actual_y_min = min(actual_y); actual_y_max = max(actual_y);
     actual_range = max(actual_x_max - actual_x_min, actual_y_max - actual_y_min);
     adaptive_min_outer = max(actual_range * 0.05, 1.5);
-    scale_x = (actual_x_max - actual_x_min) / max(nelx - 1, 1);
-    scale_y = (actual_y_max - actual_y_min) / max(nely - 1, 1);
+
+    % --- [FIX] pixel<->physical 映射必须用真实的物理 cell 尺寸 ---
+    % 旧版 scale_x = (actual_x_max - actual_x_min) / (nelx - 1) 只有在激活
+    % voxel 跨满全网格时才正确; 拓扑优化结构在 X 中段窄会导致 scale_x 被
+    % 低估, 路径在 X 方向被压缩到中段. 这里从同层 activated grids 反推真实
+    % dx_phys 和原点 grid_x_origin.
+    [ix_min_val, p_ix_min] = min(actual_ix);
+    [ix_max_val, p_ix_max] = max(actual_ix);
+    if ix_max_val > ix_min_val
+        dx_phys = (actual_x(p_ix_max) - actual_x(p_ix_min)) / ...
+                  (ix_max_val - ix_min_val);
+        grid_x_origin = actual_x(p_ix_min) - (ix_min_val - 1) * dx_phys;
+    else
+        dx_phys = 1.0;
+        grid_x_origin = actual_x_min;
+    end
+    [iy_min_val, p_iy_min] = min(actual_iy);
+    [iy_max_val, p_iy_max] = max(actual_iy);
+    if iy_max_val > iy_min_val
+        dy_phys = (actual_y(p_iy_max) - actual_y(p_iy_min)) / ...
+                  (iy_max_val - iy_min_val);
+        grid_y_origin = actual_y(p_iy_min) - (iy_min_val - 1) * dy_phys;
+    else
+        dy_phys = 1.0;
+        grid_y_origin = actual_y_min;
+    end
+    scale_x = dx_phys;
+    scale_y = dy_phys;
     expand_dist = max(scale_x, scale_y) * params.contour_expand_ratio;
 
     % --- 二值图像 ---
@@ -261,8 +289,8 @@ try
         for row = 1:nely
             for col = 1:nelx
                 if x_filter(row, col) == 0, continue; end
-                px = actual_x_min + (col - 1) * scale_x;
-                py = actual_y_min + (row - 1) * scale_y;
+                px = grid_x_origin + (col - 1) * scale_x;
+                py = grid_y_origin + (row - 1) * scale_y;
                 if has_structure_mask && ~isinterior(structure_mask_poly, px, py)
                     x_filter(row, col) = 0; continue;
                 end
@@ -299,8 +327,8 @@ try
             bnd(:,1) = smooth(bnd(:,1), 3);
             bnd(:,2) = smooth(bnd(:,2), 3);
         end
-        x_actual = actual_x_min + (bnd(:, 2) - 1) * scale_x;
-        y_actual = actual_y_min + (bnd(:, 1) - 1) * scale_y;
+        x_actual = grid_x_origin + (bnd(:, 2) - 1) * scale_x;
+        y_actual = grid_y_origin + (bnd(:, 1) - 1) * scale_y;
         contour_pts = [x_actual(:), y_actual(:)];
 
         if k <= N

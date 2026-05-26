@@ -85,9 +85,13 @@ class Config:
     TRANSLATE_Z = 0.0
 
     # Beam-to-host 坐标对齐偏移
-    #   None     -> 自动计算 (推荐, 让 beam 中心对齐 host 中心)
-    #   (x,y,z)  -> 手动指定 (mm), 例: (0.5, 0.0, 0.5)
-    BEAM_MANUAL_OFFSET = None
+    #   None         -> 自动居中 (兼容旧逻辑, 不推荐: 拓扑优化结构本就非对称,
+    #                   强行让 beam bbox 中心对齐 host bbox 中心会推偏 beam)
+    #   (0.0,0.0,0.0)-> 不做任何平移 (推荐: MATLAB 端 export_paths_to_fea
+    #                   写出的 beam 路径与 host 都在以 voxel(0,0,0) 角为原点
+    #                   的物理 mm 坐标系里, 天然对齐)
+    #   (x,y,z)      -> 手动指定 (mm)
+    BEAM_MANUAL_OFFSET = (0.0, 0.0, 0.0)
 
     BEAM_MAJOR_AXIS = 0.6
     BEAM_MINOR_AXIS = 0.15
@@ -318,12 +322,22 @@ def create_host_from_voxels(model, params, elements, part_name=None):
     nely = params.get('nely', 40)
     nelz = params.get('nelz', 20)
 
-    dx = Config.ELEMENT_SIZE_X
-    dy = Config.ELEMENT_SIZE_Y
-    dz = Config.ELEMENT_SIZE_Z
+    # Physical cell size (mm). Read from mesh_params.txt if MATLAB wrote it
+    # (refined-grid aware path), otherwise fall back to Config defaults
+    # (legacy 1mm unrefined behavior).
+    # CRITICAL: if mesh_params.txt has 'nelx' from a refined grid (e.g. 120)
+    # but no 'dx', the host part will be built at nelx*1.0 = 120 mm physical
+    # extent, while beam paths are in the true mm coordinate (e.g. 60 mm).
+    # This causes the host to be REFINE_FACTOR times too big.
+    dx = params.get('dx', Config.ELEMENT_SIZE_X)
+    dy = params.get('dy', Config.ELEMENT_SIZE_Y)
+    dz = params.get('dz', Config.ELEMENT_SIZE_Z)
 
     print 'Grid: %d x %d x %d, valid elements: %d' % (
         nelx, nely, nelz, len(elements))
+    print 'Cell size (mm): dx=%.4f dy=%.4f dz=%.4f  %s' % (
+        dx, dy, dz,
+        '(from mesh_params.txt)' if ('dx' in params) else '(Config default)')
 
     node_positions = set()
     for e in elements:

@@ -26,10 +26,9 @@ helper_files = {
     'extract_fea_results.py', ...
     'run_compare.m', ...
     'compare_fea_results.m', ...
+    'compute_path_statistics.m', ...
     'diagnose_loadpoint.py', ...
 };
-% NOTE: compute_path_statistics.m is NOT copied here - it lives in script_dir
-% and reads/writes from there directly.
 
 % ===== 参数 =====
 p = inputParser;
@@ -64,9 +63,9 @@ if any(stages_to_run == 1)
     if exist(target, 'file') && ~force_all
         fprintf('  [SKIP] %s already exists\n', target);
     else
-        fprintf('  [RUN]  slice_refined_model (curved/mine)...\n');
+        fprintf('  [RUN]  slice_refined_model_v6 (curved/mine)...\n');
         try
-            slice_refined_model;   % USER'S FUNCTION
+            slice_refined_model_v6('voxel_refined_latest.mat', target);
             fprintf('  [OK]   produced %s\n', target);
         catch err
             fprintf('  [FAIL] %s\n', err.message);
@@ -82,9 +81,9 @@ if any(stages_to_run == 2)
     if exist(target, 'file') && ~force_all
         fprintf('  [SKIP] %s already exists\n', target);
     else
-        fprintf('  [RUN]  slice_planar_z (planar layers)...\n');
+        fprintf('  [RUN]  generate_planar_slicing (planar layers)...\n');
         try
-            slice_planar_z;   % USER'S FUNCTION
+            generate_planar_slicing('voxel_refined_latest.mat', target);
             fprintf('  [OK]   produced %s\n', target);
         catch err
             fprintf('  [FAIL] %s\n', err.message);
@@ -199,20 +198,59 @@ if any(stages_to_run == 8)
         'all_layers_paths_only_planar_stream.mat',  'planar_stream'; ...
         'all_layers_paths_only_planar_offset.mat',  'planar_offset'; ...
     };
+
+    % Detect missing host/ data. The standalone export_paths_to_fea.m writes
+    % host/mesh_params.txt + host/valid_elements.txt only on first invocation
+    % (when valid_elements.txt does not yet exist). If beam_paths from a
+    % previous run already exist, all 4 configs SKIP and host never gets
+    % written. Force-rerun the first config when host is missing to break
+    % that deadlock.
+    host_valid_txt   = fullfile(fea_dir, 'host', 'valid_elements.txt');
+    host_needs_write = ~exist(host_valid_txt, 'file');
+    if host_needs_write
+        fprintf('  [INFO] %s missing\n', host_valid_txt);
+        fprintf('         will force-run first config to populate host/\n');
+    end
+
     for k = 1:size(pairs, 1)
         mat_file = pairs{k, 1};
         cfg_name = pairs{k, 2};
-        out_subdir = fullfile(fea_dir, cfg_name, 'beam_paths');
-        n_existing = numel(dir(fullfile(out_subdir, 'path_*.txt')));
-        if n_existing > 0 && ~force_all
-            fprintf('  [SKIP] %s: %d path_*.txt already in %s\n', ...
+        out_subdir   = fullfile(fea_dir, cfg_name, 'beam_paths');
+        summary_file = fullfile(fea_dir, cfg_name, 'beam_paths_summary.txt');
+        n_existing   = numel(dir(fullfile(out_subdir, 'path_*.txt')));
+        has_sentinel = exist(summary_file, 'file') > 0;
+
+        % abaqus_cfrc_compare.py uses beam_paths_summary.txt as the
+        % sentinel that decides whether a config gets processed. So the SKIP
+        % check here must require BOTH path_*.txt and the sentinel; if the
+        % sentinel is missing (legacy state from the old buggy local helper),
+        % redo the export.
+        force_this  = (host_needs_write && k == 1) || ...
+                      (n_existing > 0 && ~has_sentinel);
+        can_skip    = (n_existing > 0) && has_sentinel && ~force_all && ~force_this;
+
+        if can_skip
+            fprintf('  [SKIP] %s: %d path_*.txt + summary already in %s\n', ...
                 cfg_name, n_existing, out_subdir);
             continue;
         end
-        fprintf('  [RUN]  export_paths_to_fea %s -> %s\n', mat_file, cfg_name);
+
+        % Diagnostic preamble so the user knows why we are re-running.
+        if force_this && host_needs_write && k == 1
+            fprintf('  [RUN]  export_paths_to_fea %s -> %s  (also writes host/)\n', ...
+                mat_file, cfg_name);
+        elseif n_existing > 0 && ~has_sentinel
+            fprintf(['  [RUN]  export_paths_to_fea %s -> %s  ' ...
+                     '(re-export: %d path_*.txt present but summary missing)\n'], ...
+                mat_file, cfg_name, n_existing);
+        else
+            fprintf('  [RUN]  export_paths_to_fea %s -> %s\n', mat_file, cfg_name);
+        end
+
         try
             export_paths_to_fea(mat_file, cfg_name, fea_dir);
             fprintf('  [OK]   %s exported\n', cfg_name);
+            host_needs_write = false;
         catch err
             fprintf('  [FAIL] %s\n', err.message);
         end
@@ -243,6 +281,33 @@ if any(stages_to_run == 9)
             fprintf('  [OK]   %s  -> %s\n', helper_files{k}, dst);
         catch err
             fprintf('  [FAIL] copy %s: %s\n', helper_files{k}, err.message);
+        end
+    end
+
+    % --- 同步复制 4 个 path mat 到 fea_dir ---
+    % compute_path_statistics 是从 pwd 搜 mat 的, 而 run_compare cd 到 fea_dir
+    % 之后 pwd = fea_dir. 把 4 份 mat 拷过来才能让 run_compare('all') / ('stats')
+    % 在 fea_dir 自给自足 (不依赖 MATLAB 项目目录在 path 里).
+    fprintf('\n  Copying 4 path mat files for run_compare(''stats''/''all''):\n');
+    path_mats = { ...
+        'all_layers_paths_only_v3.mat', ...
+        'all_layers_paths_only_mine_offset.mat', ...
+        'all_layers_paths_only_planar_stream.mat', ...
+        'all_layers_paths_only_planar_offset.mat', ...
+    };
+    for k = 1:numel(path_mats)
+        src = fullfile(script_dir, path_mats{k});
+        dst = fullfile(fea_dir, path_mats{k});
+        if ~exist(src, 'file')
+            fprintf('  [WARN] path mat missing: %s\n', src);
+            continue;
+        end
+        try
+            copyfile(src, dst, 'f');
+            d = dir(dst);
+            fprintf('  [OK]   %s  (%.1f MB)\n', path_mats{k}, d.bytes/1e6);
+        catch err
+            fprintf('  [FAIL] copy %s: %s\n', path_mats{k}, err.message);
         end
     end
 end
@@ -291,49 +356,21 @@ end
 
 
 function run_v6_with_slice(slice_mat, target_mat)
-% Wrapper around all_layers_path_generation, explicitly using given slice file.
-% Avoids v6 internal clear polluting base workspace.
+% Wrapper around all_layers_path_generation_v6, explicitly using given slice file.
+% Also gives each run a unique full-results filename so consecutive stages
+% (mine_stream and planar_stream) don't overwrite each other's intermediate.
 fprintf('    using slice: %s\n', slice_mat);
 fprintf('    target:      %s\n', target_mat);
-all_layers_path_generation(slice_mat, target_mat);
+[~, base, ~] = fileparts(target_mat);
+full_results = sprintf('%s_full.mat', base);
+all_layers_path_generation_v6(slice_mat, target_mat, full_results);
 end
 
 
 function generate_offset_paths(slice_mat, target_mat)
-% Pure offset path generation (no stream). Adapt function name as needed.
+% Pure offset path generation (no stream).
 fprintf('    using slice: %s\n', slice_mat);
 fprintf('    target:      %s\n', target_mat);
-offset_only_path_generation(slice_mat, target_mat);
+path_generation_offset_only(slice_mat, target_mat);
 end
 
-
-function export_paths_to_fea(mat_file, cfg_name, fea_dir)
-% Export paths_only cell array to path_NNNN.txt in fea_dir/cfg_name/beam_paths/
-out_dir = fullfile(fea_dir, cfg_name, 'beam_paths');
-if ~exist(out_dir, 'dir'); mkdir(out_dir); end
-
-S = load(mat_file);
-if isfield(S, 'paths_only')
-    paths = S.paths_only;
-elseif isfield(S, 'all_paths_only')
-    paths = S.all_paths_only;
-else
-    error('mat file %s has no paths_only / all_paths_only field', mat_file);
-end
-
-n_written = 0;
-for k = 1:numel(paths)
-    p = paths{k};
-    if isempty(p); continue; end
-    fn = fullfile(out_dir, sprintf('path_%04d.txt', k));
-    fid = fopen(fn, 'w');
-    if size(p, 2) == 3
-        fprintf(fid, '%.6f %.6f %.6f\n', p');
-    else
-        fprintf(fid, '%.6f %.6f %.6f\n', p(:, 1:3)');
-    end
-    fclose(fid);
-    n_written = n_written + 1;
-end
-fprintf('    wrote %d path_*.txt to %s\n', n_written, out_dir);
-end

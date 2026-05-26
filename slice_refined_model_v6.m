@@ -1,3 +1,4 @@
+function slice_refined_model_v6(voxel_mat, output_mat)
 %% ========================================
 %% 细化模型完整切片系统 v6
 %% 纯几何偏置: 4倍域覆盖 + Z投影 + 包络修复
@@ -14,11 +15,31 @@
 %     4. 去掉scatteredInterpolant重网格化
 %     5. 去掉per-point曲率限制
 %     6. 新增包络修复: 高斯平滑参考+方向裁剪消除cusp
+%
+% 输入 (可选):
+%   voxel_mat    - 体素 mat 路径 (默认 'voxel_refined_latest.mat')
+%                  须含 refined_data; 另需同目录下 'Pre_surface.mat'
+%   output_mat   - 输出 mat 路径 (默认 'slice_results_refined_latest.mat')
+%                  会同时保存一份带 timestamp 的副本.
+%
+% 用法:
+%   slice_refined_model_v6();                          % 默认
+%   slice_refined_model_v6('voxel_refined_latest.mat', ...
+%                          'slice_results_refined_latest.mat');
 %%
+
+if nargin < 1 || isempty(voxel_mat)
+    voxel_mat = 'voxel_refined_latest.mat';
+end
+if nargin < 2 || isempty(output_mat)
+    output_mat = 'slice_results_refined_latest.mat';
+end
 
 fprintf('\n');
 fprintf('==============================================================\n');
 fprintf('     Slicing System v6 (4x Domain + Envelope Repair)        \n');
+fprintf('  Input : %s\n', voxel_mat);
+fprintf('  Output: %s\n', output_mat);
 fprintf('==============================================================\n\n');
 
 %% ========== Step 0: Toolbox Detection ==========
@@ -55,11 +76,11 @@ end
 %% ========== Step 1: Load Data ==========
 fprintf('\n[1] Loading data...\n');
 
-if ~exist('voxel_refined_latest.mat', 'file')
-    error('Cannot find voxel_refined_latest.mat');
+if ~exist(voxel_mat, 'file')
+    error('Cannot find %s', voxel_mat);
 end
 
-load('voxel_refined_latest.mat');
+load(voxel_mat);
 load('Pre_surface.mat');
 
 grid_data = refined_data.grid_data;
@@ -597,7 +618,7 @@ slice_results.z_height_field = struct(...
 save(filename, 'slice_results', '-v7.3');
 fprintf('  Saved: %s\n', filename);
 
-latest_name = 'slice_results_refined_latest.mat';
+latest_name = output_mat;
 if exist(latest_name, 'file')
     delete(latest_name);
     pause(0.5);
@@ -623,6 +644,8 @@ fprintf('  Slicing complete! %d layers, %.1f%% coverage\n', ...
     num_layers, coverage_rate);
 fprintf('  [v6] 4x domain + Z-projection + envelope repair + soft sigmoid\n');
 fprintf('==============================================================\n\n');
+
+end % function slice_refined_model_v6
 
 
 %% ================================================================

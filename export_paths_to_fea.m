@@ -193,12 +193,45 @@ nelx = refined_data.grid_size.nelx;
 nely = refined_data.grid_size.nely;
 nelz = refined_data.grid_size.nelz;
 
+% 计算物理 cell 尺寸 (mm). 直接从相邻 voxel 中心的差分得到, 不依赖任何
+% SCALE_FACTOR / REFINE_FACTOR 的命名约定. 这是给 abaqus_cfrc_compare.py
+% 真实物理坐标用的关键 — 否则 Python 端会用硬编码的 1mm 建 host, 当
+% nelx 被 refine 过后, host 会被放大 REFINE_FACTOR 倍, 跟 beam 路径
+% 对不上.
+if nelx >= 2
+    dx_phys = grid_data(2, 1, 1).x - grid_data(1, 1, 1).x;
+else
+    dx_phys = 1.0;
+end
+if nely >= 2
+    dy_phys = grid_data(1, 2, 1).y - grid_data(1, 1, 1).y;
+else
+    dy_phys = 1.0;
+end
+if nelz >= 2
+    dz_phys = grid_data(1, 1, 2).z - grid_data(1, 1, 1).z;
+else
+    dz_phys = 1.0;
+end
+% 防御: 若负值或异常小, 警告并回退 (refined_data.grid_data 索引顺序不同时
+% 可能会发生).
+if dx_phys <= 1e-6 || dy_phys <= 1e-6 || dz_phys <= 1e-6
+    warning(['Computed cell size looks wrong: dx=%.6f dy=%.6f dz=%.6f. ' ...
+             'Falling back to 1.0 mm. Check grid_data orientation.'], ...
+             dx_phys, dy_phys, dz_phys);
+    dx_phys = 1.0; dy_phys = 1.0; dz_phys = 1.0;
+end
+
 % mesh_params.txt
 fid = fopen(fullfile(host_dir, 'mesh_params.txt'), 'w');
 fprintf(fid, '# host mesh params for CFRC FEA\n');
 fprintf(fid, 'nelx %d\n', nelx);
 fprintf(fid, 'nely %d\n', nely);
 fprintf(fid, 'nelz %d\n', nelz);
+fprintf(fid, '# physical cell size (mm) — derived from refined grid voxel centers\n');
+fprintf(fid, 'dx %.6f\n', dx_phys);
+fprintf(fid, 'dy %.6f\n', dy_phys);
+fprintf(fid, 'dz %.6f\n', dz_phys);
 fclose(fid);
 
 % valid_elements.txt
@@ -219,7 +252,8 @@ for i = 1:nelx
 end
 fclose(fid);
 
-fprintf('  mesh_params.txt: nelx=%d, nely=%d, nelz=%d\n', nelx, nely, nelz);
+fprintf('  mesh_params.txt: nelx=%d, nely=%d, nelz=%d, dx=%.4f dy=%.4f dz=%.4f mm\n', ...
+    nelx, nely, nelz, dx_phys, dy_phys, dz_phys);
 fprintf('  valid_elements.txt: %d valid voxels\n', n_written);
 end
 

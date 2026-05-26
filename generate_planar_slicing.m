@@ -1,3 +1,4 @@
+function generate_planar_slicing(voxel_mat, output_mat)
 %% ========================================
 %% 平面切片 (Planar Slicing) - 对照组用
 %% ========================================
@@ -7,11 +8,15 @@
 %       对照组的输入. 下游的 all_layers_path_generation_v6.m /
 %       path_generation_offset_only.m 不需要任何改动, 只要换输入 mat 即可.
 %
-% 输入:
-%   voxel_refined_latest.mat   (含 refined_data.grid_data + valid_grid_mask)
+% 输入 (可选):
+%   voxel_mat    - 体素 mat 路径 (默认 'voxel_refined_latest.mat')
+%                  须含 refined_data.grid_data + valid_grid_mask
+%   output_mat   - 输出 mat 路径 (默认 'slice_results_refined_latest_PLANAR.mat')
 %
-% 输出:
-%   slice_results_refined_latest_PLANAR.mat   (含 slice_results 结构)
+% 用法:
+%   generate_planar_slicing();                                   % 默认
+%   generate_planar_slicing('voxel_refined_latest.mat', ...
+%                           'slice_results_refined_latest_PLANAR.mat');
 %
 % 字段对照表 (与 v6 完全一致):
 %   slice_results.surface_layers{i}.offset           - 层中心 Z 坐标 (vs 基准面)
@@ -25,30 +30,39 @@
 %   slice_results.z_height_field.{xx,yy,Z_min_map,Z_max_map}
 %   slice_results.statistics, .parameters, .metadata
 %
-% 注意: 这里"每层 1mm 厚"是按 ELEM_SIZE_ORIG = 1.0 mm 的约定; 如果你的 refined
-%       grid 用了 REFINE_FACTOR ≠ 1, 把 LAYER_THICKNESS_MM 改成对应的 sub_step.
-%
+% 注意: 这里"每层物理厚度"会被 refined_data.parameters.SCALE_FACTOR 缩放
+%       (LAYER_THICKNESS_MM = LAYER_THICKNESS_ORIG * SCALE_FACTOR),
+%       与 slice_refined_model_v6 中的 OFFSET_STEP = OFFSET_STEP_ORIG *
+%       SCALE_FACTOR 完全对齐, 保证 planar 和 mine 的层数一致.
+%       默认 LAYER_THICKNESS_ORIG = 1.0 mm (= 一个原始体素的 z 维).
 
-clear; clc; close all;
+if nargin < 1 || isempty(voxel_mat)
+    voxel_mat = 'voxel_refined_latest.mat';
+end
+if nargin < 2 || isempty(output_mat)
+    output_mat = 'slice_results_refined_latest_PLANAR.mat';
+end
 
 fprintf('\n');
 fprintf('==============================================================\n');
 fprintf('     Planar Slicing for CFRC 5-way Comparison              \n');
+fprintf('  Input : %s\n', voxel_mat);
+fprintf('  Output: %s\n', output_mat);
 fprintf('==============================================================\n\n');
 
-%% ========== Step 0: 参数 ==========
-LAYER_THICKNESS_MM   = 1.0;   % 每层物理厚度 (= 一个原始体素的 z 维)
+%% ========== Step 0: 参数 (与 v6 命名对齐) ==========
+LAYER_THICKNESS_ORIG = 1.0;   % 原始物理层厚 (= 一个原始体素的 z 维, mm)
 DENSITY_THRESHOLD    = 0.5;   % 与 v6 一致
 MIN_GRIDS_PER_LAYER  = 3;     % 少于这个数的层丢弃
-LAYER_XY_PADDING     = 0.5;   % X_surf/Y_surf 边界外扩 (mm), 避免 scatteredInterpolant nearest 邻近问题
+LAYER_XY_PADDING     = 0.5;   % X_surf/Y_surf 边界外扩 (mm)
 
 %% ========== Step 1: 加载体素数据 ==========
 fprintf('[1] Loading voxel data...\n');
 
-if ~exist('voxel_refined_latest.mat', 'file')
-    error('voxel_refined_latest.mat not found.');
+if ~exist(voxel_mat, 'file')
+    error('%s not found.', voxel_mat);
 end
-load('voxel_refined_latest.mat');
+load(voxel_mat);
 
 grid_data        = refined_data.grid_data;
 valid_grid_mask  = refined_data.valid_grid_mask;
@@ -58,6 +72,24 @@ nelz             = refined_data.grid_size.nelz;
 
 fprintf('  Grid: %d x %d x %d, valid voxels: %d\n', ...
     nelx, nely, nelz, sum(valid_grid_mask(:)));
+
+%% ========== Step 1b: 应用 SCALE_FACTOR (与 v6 OFFSET_STEP 同步) ==========
+% v6 里:  OFFSET_STEP = OFFSET_STEP_ORIG * SCALE_FACTOR;
+% 这里也用完全相同的换算, 保证 planar 和 mine 的层数一致.
+if ~isfield(refined_data, 'parameters') || ~isfield(refined_data.parameters, 'SCALE_FACTOR')
+    warning(['refined_data.parameters.SCALE_FACTOR not found in %s; ' ...
+             'falling back to SCALE_FACTOR = 1.0 (planar layer count may ' ...
+             'NOT match curved).'], voxel_mat);
+    SCALE_FACTOR = 1.0;
+else
+    SCALE_FACTOR = refined_data.parameters.SCALE_FACTOR;
+end
+LAYER_THICKNESS_MM = LAYER_THICKNESS_ORIG * SCALE_FACTOR;
+
+fprintf('  SCALE_FACTOR         : %.4f\n', SCALE_FACTOR);
+fprintf('  LAYER_THICKNESS_ORIG : %.4f mm\n', LAYER_THICKNESS_ORIG);
+fprintf('  LAYER_THICKNESS_MM   : %.4f mm  (= ORIG * SCALE_FACTOR)\n', ...
+    LAYER_THICKNESS_MM);
 
 %% ========== Step 2: 全部有效体素的几何范围 ==========
 fprintf('\n[2] Computing global bounds of valid voxels...\n');
@@ -271,20 +303,22 @@ slice_results.statistics = struct(...
     'total_activated_voxels', n_valid, ...
     'coverage_rate', 100.0);
 slice_results.parameters = struct(...
+    'LAYER_THICKNESS_ORIG', LAYER_THICKNESS_ORIG, ...
     'LAYER_THICKNESS_MM', LAYER_THICKNESS_MM, ...
+    'SCALE_FACTOR', SCALE_FACTOR, ...
     'DENSITY_THRESHOLD', DENSITY_THRESHOLD, ...
     'mode', 'planar');
 slice_results.surface_params = refined_data.surface_params;  % 透传 (路径生成不强依赖)
 slice_results.metadata = struct(...
     'timestamp', datestr(now, 'yyyymmdd_HHMMSS'), ...
     'date', datestr(now), ...
-    'version', 'planar_v1');
+    'version', 'planar_v2_scale_factor_aligned');
 slice_results.z_height_field = struct(...
     'xx', zmap_xx, 'yy', zmap_yy, ...
     'Z_min_map', Z_min_map, 'Z_max_map', Z_max_map);
 
 %% ========== Step 8: 保存 ==========
-filename = 'slice_results_refined_latest_PLANAR.mat';
+filename = output_mat;
 save(filename, 'slice_results', '-v7.3');
 fprintf('\n  Saved: %s\n', filename);
 fi = dir(filename);
@@ -296,3 +330,5 @@ fprintf('  Layers: %d, layer thickness: %.2f mm\n', num_layers, LAYER_THICKNESS_
 fprintf('  下一步: 在 path_generation_offset_only.m / all_layers_path_generation_v6.m\n');
 fprintf('         里把 slice_file 改成 ''slice_results_refined_latest_PLANAR.mat''\n');
 fprintf('==============================================================\n\n');
+
+end % function generate_planar_slicing
