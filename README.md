@@ -271,6 +271,19 @@ w = +sin(t_xoz)                ← 注意是 +，不是 −
 2. **源码内不含任何非 ASCII 字符**（包括中文注释、中文字符串）
 3. 使用 Python 2.7 兼容语法（`print` 语句、`from __future__ import …` 可加）
 
+#### 已知偏离 (known deviation): `abaqus_cfrc_compare.py` 含中文注释
+
+历史上 `abaqus_cfrc_compare.py` 已经积累了 **~5200 字节的非 ASCII 内容**（大部分是行内 `# 中文注释` 这类），属于对上面规约第 2 条的偏离。当前在 Albert 本地环境（Abaqus 2021 + Windows 中文 locale）一直能正常加载和运行，所以**保留现状未做清理**。
+
+**如果将来出现下列任一现象，第一时间怀疑是这个偏离引起的：**
+
+- Abaqus 启动脚本时报 `SyntaxError: Non-ASCII character '\xe4' in file ... but no encoding declared`（说明 PY2.7 解释器没识别第一行的 `coding: utf-8`，可能因为有 BOM 或换行符在 `coding` 之前）
+- 报 `UnicodeDecodeError` / `UnicodeEncodeError`，尤其涉及 `print` 输出到 stdout 时
+- 在非中文 locale 的机器（同事的电脑、CI/服务器、Linux 容器）上跑直接挂掉，本地却没事
+- 这个文件在某些编辑器里打开成乱码（GBK ↔ UTF-8 误判）
+
+**应急修复**：把 `abaqus_cfrc_compare.py` 里所有中文注释/字符串改成英文 ASCII。可以用 `python3 -c "import unicodedata; ..."` 或简单的 `grep -nP '[\x80-\xff]' abaqus_cfrc_compare.py` 定位所有非 ASCII 位置。其它 3 个 Abaqus 脚本（`abaqus_odb_to_mat.py`、`extract_fea_results.py`、`diagnose_loadpoint.py`）目前都是纯 ASCII，不受影响。
+
 ### 5.4 单元类型
 
 - Abaqus 母体网格：`C3D8R`（缩减积分六面体，避免 volumetric locking）
@@ -305,6 +318,7 @@ w = +sin(t_xoz)                ← 注意是 +，不是 −
 | compute_path_statistics | 应力查询用 mask 跳过网格外位置 |
 | abaqus_odb_to_mat | `t_xoz` 用 `+asin(dz)`（匹配 `step3_extract_stress.py` 历史约定） |
 | voxel_refinement + extract_layer_2d_projection | 启用 `REFINE_FACTOR=3`：fine grid 去掉 `-0.5` 偏移以对齐原始采样 `[0.5, nelx-0.5]`；2D 投影改用 `grid_index` 整数下标（物理坐标 `.x/.y` 在 refine≥2 时非整数无法作数组下标） |
+| run_full_comparison 管线（10 issues 一并修，详见 [`docs/03`](docs/03_管线修复链_REFINE3启用.md)） | v6 系列脚本 function 化消除 `clear; clc;` 把 wrapper 局部变量清光；double-side host cell 尺寸修复（MATLAB 写 `dx/dy/dz` 进 `mesh_params.txt`，Python 读取，修前 host 被放大 REFINE_FACTOR 倍）；path 脚本 X/Y 方向 scale 改用 `grid_index` 反推真实 `dx_phys`（修前激活区窄方向上 path span 偏小 ~40%）；SKIP sentinel 与 Abaqus 端对齐；host 缺失自动重建；`BEAM_MANUAL_OFFSET` 默认 `(0,0,0)`；Stage 9 自动拷 4 个 path mat + `compute_path_statistics.m` 到 fea_dir |
 
 ---
 
@@ -320,3 +334,4 @@ w = +sin(t_xoz)                ← 注意是 +，不是 −
 - 本文（顶层 README）—— 全景与文件索引
 - [`docs/01_前处理与体素化.md`](docs/01_前处理与体素化.md) —— 阶段 A/B 深入：`voxelize.py` CLI、9 种轴旋转、STL vs Topo 模式语义、`abaqus_odb_to_mat.py` 输出字段定义、常见坑 Q1–Q8
 - [`docs/02_切片路径与FEA对比.md`](docs/02_切片路径与FEA对比.md) —— 阶段 C/D/E 深入：`run_full_comparison` 10 stage、Abaqus 自动重试 / blacklist 机制、`*Cload` 逐节点语义、`voxel_refined_latest.mat` 数据结构、4 张路径统计图的物理含义
+- [`docs/03_管线修复链_REFINE3启用.md`](docs/03_管线修复链_REFINE3启用.md) —— 启用 `REFINE_FACTOR=3` 后整条 `run_full_comparison` 管线 10 个相关问题的完整 root-cause 与修复链：从 Stage 2 函数名找不到 → MATLAB 脚本 function 化 → SKIP sentinel 双端对齐 → host cell 尺寸双端修复 → path X 方向 scale 误用（含数据流约定图与验证流程）
