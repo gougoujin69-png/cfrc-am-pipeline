@@ -94,20 +94,22 @@ fprintf('  Grid: %d x %d x %d, valid: %d\n', nelx, nely, nelz, sum(valid_grid_ma
 %% ========== Step 2: Parameters ==========
 fprintf('\n[2] Parameters...\n');
 
-SCALE_FACTOR = refined_data.parameters.SCALE_FACTOR;
+SCALE_FACTOR = refined_data.parameters.SCALE_FACTOR;   % 现在语义 = 层高(mm)
 
-OFFSET_STEP_ORIG = 1.0;
-INITIAL_THRESHOLD_ORIG = 0.70;
-THRESHOLD_INCREMENT_ORIG = 0.5;
-SURFACE_RESOLUTION_ORIG = 0.04;
+% [FIX] 解耦: 网格相关参数按"物理网格间距 GRID_STEP", 层高单独用 SCALE_FACTOR
+if isfield(refined_data.parameters,'ELEM_SIZE') && isfield(refined_data.parameters,'REFINE_FACTOR')
+    GRID_STEP = refined_data.parameters.ELEM_SIZE / refined_data.parameters.REFINE_FACTOR;
+else
+    GRID_STEP = SCALE_FACTOR;   % 旧数据兼容: 旧 SCALE_FACTOR 本就是网格间距
+end
 
-OFFSET_STEP = OFFSET_STEP_ORIG * SCALE_FACTOR;
-INITIAL_THRESHOLD = INITIAL_THRESHOLD_ORIG * SCALE_FACTOR;
-THRESHOLD_INCREMENT = THRESHOLD_INCREMENT_ORIG * SCALE_FACTOR;
-SURFACE_RESOLUTION = SURFACE_RESOLUTION_ORIG / SCALE_FACTOR;
+OFFSET_STEP         = SCALE_FACTOR;        % 层高 (独立)
+INITIAL_THRESHOLD   = 0.70 * GRID_STEP;    % 激活阈值随物理网格间距 (关键修复)
+THRESHOLD_INCREMENT = 0.50 * GRID_STEP;
+SURFACE_RESOLUTION  = 0.35 * GRID_STEP;    % 曲面分辨率 ~ 1/3 网格间距
 DENSITY_THRESHOLD = 0.5;
 NEW_ACTIVATION_THRESHOLD = 5;
-MAX_OFFSET = 120 / SCALE_FACTOR;
+MAX_OFFSET = nelz * GRID_STEP * 1.5;       % 按物理 Z 范围 (而非 120/SCALE_FACTOR)
 MAX_THRESHOLD_RETRIES = 3;
 MAX_CONSECUTIVE_EMPTY = 2;
 

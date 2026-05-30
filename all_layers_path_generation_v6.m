@@ -311,7 +311,8 @@ end
 hold off; axis equal; axis off; view(-37.5, 30); grid on;
 xlabel('X'); ylabel('Y'); zlabel('Z');
 title('All Layers 3D Paths V6', 'FontSize', 14);
-colormap(jet); c = colorbar; c.Label.String = 'Layer'; caxis([1, num_layers]);
+colormap(jet); c = colorbar; c.Label.String = 'Layer';
+if num_layers >= 2, clim([1, num_layers]); end
 saveas(gcf, 'all_layers_3d_v6.png');
 fprintf('  Saved: all_layers_3d_v6.png\n');
 
