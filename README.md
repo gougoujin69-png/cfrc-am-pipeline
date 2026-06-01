@@ -319,6 +319,7 @@ w = +sin(t_xoz)                ← 注意是 +，不是 −
 | abaqus_odb_to_mat | `t_xoz` 用 `+asin(dz)`（匹配 `step3_extract_stress.py` 历史约定） |
 | voxel_refinement + extract_layer_2d_projection | 启用 `REFINE_FACTOR=3`：fine grid 去掉 `-0.5` 偏移以对齐原始采样 `[0.5, nelx-0.5]`；2D 投影改用 `grid_index` 整数下标（物理坐标 `.x/.y` 在 refine≥2 时非整数无法作数组下标） |
 | run_full_comparison 管线（10 issues 一并修，详见 [`docs/03`](docs/03_管线修复链_REFINE3启用.md)） | v6 系列脚本 function 化消除 `clear; clc;` 把 wrapper 局部变量清光；double-side host cell 尺寸修复（MATLAB 写 `dx/dy/dz` 进 `mesh_params.txt`，Python 读取，修前 host 被放大 REFINE_FACTOR 倍）；path 脚本 X/Y 方向 scale 改用 `grid_index` 反推真实 `dx_phys`（修前激活区窄方向上 path span 偏小 ~40%）；SKIP sentinel 与 Abaqus 端对齐；host 缺失自动重建；`BEAM_MANUAL_OFFSET` 默认 `(0,0,0)`；Stage 9 自动拷 4 个 path mat + `compute_path_statistics.m` 到 fea_dir |
+| plotTopologyWithMedialAxis / plotTopologyWithMedialAxis2 / single_layer_test | 流线生成的材料阈值 `th = prctile(xold,(1-volfrac)*100)*1.2` 是为连续密度场（SIMP `xPhys∈[0,1]`）设计，但切片管线经 `extract_layer_2d_projection` 喂进来的是二值掩膜（`{0,1}`）。当某层 2D 填充率 ≥ (1-volfrac)=50% 时 `prctile=1`、`th=1.2`>掩膜最大值、`find(xold>th)` 返空 → 无材料掩膜 → 0 条流线 + 轮廓退化成全域矩形。修复：空结果时回退 `find(xold>0)`（任意材料像素），连续密度场下基本不触发；触发时也比"返空"合理。验证（同一切片数据重跑路径）：总流线 89→287，零流线层 36/59→0/59 |
 
 ---
 
