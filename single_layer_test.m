@@ -103,6 +103,11 @@ x_filter = zeros(nely, nelx);
 th = prctile(xold(:), (1 - params.volfrac) * 100);
 th = th * 1.2;
 x2_num = find(xold > th);
+if isempty(x2_num)
+    % [FIX] xold 为二值掩膜且填充率>=(1-volfrac)时, prctile*1.2 > 最大值 ->
+    %   掩膜全空 -> 无轮廓/无流线. 回退到"任意材料像素".
+    x2_num = find(xold > 0);
+end
 x_filter(x2_num) = 1;
 
 fprintf('  阈值: %.4f\n', th);

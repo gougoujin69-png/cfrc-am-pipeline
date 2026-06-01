@@ -14,6 +14,12 @@ function [outer_contours, inner_contours, streamlines, medial_axis,Original_stre
     th = prctile(xold(:), (1-volfrac)*100);
     th=th*1.2;
     x2_num = find(xold > th);
+    if isempty(x2_num)
+        % [FIX] xold 为二值掩膜(切片层投影)且填充率>=(1-volfrac)时,
+        %   prctile=最大值, th=最大值*1.2 > 最大值 -> 掩膜全空 -> 无轮廓/无流线.
+        %   回退到"任意材料像素", 保证高填充率层也能生成流线.
+        x2_num = find(xold > 0);
+    end
     x_filter(x2_num) = 1;
     x_show = x_filter;
     
