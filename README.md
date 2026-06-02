@@ -175,6 +175,7 @@ matlab -batch "voxel_refinement_from_test; generate_reference_surface; \
 | 文件 | 说明 |
 |---|---|
 | `all_layers_path_generation_v6.m` | 多层 stream 路径主流程（v6） |
+| `trace_principal_streamlines.m` | **升级版流线追踪器**：双角度域 RK2 积分（避开 `stream2` 在 180° 翻转处打结）+ 符号相干双向延伸 + 最长优先等间距贪心选择 + 对称化（auto/x/y/xy）+ 冗余剪除。被 `all_layers_path_generation_v6` 通过 `params.use_advanced_streamlines=true` 启用 |
 | `plot_streamline_partitioning_v6.m` | 流线分区与可视化 |
 | `extendStreamlinesToContour.m` | 把流线两端外推到轮廓 |
 | `filterStreamlinesInsideContours.m` | 过滤跑出轮廓的流线 |
@@ -199,7 +200,8 @@ matlab -batch "voxel_refinement_from_test; generate_reference_surface; \
 | `resample_path.m` | 按弧长重采样路径（Abaqus 单元长度均匀化） |
 | `ensureClockwise.m` | 强制顺时针朝向 |
 | `getNormalAtPoint.m` | 任意点处的曲面法向 |
-| `filter_orientation.m` / `filter_orientation_simple.m` | 方向场滤波 |
+| `filter_orientation.m` / `filter_orientation_simple.m` | 方向场滤波（旧实现，作为 fallback） |
+| `filter_orientation_field.m` | **双边保边方向场滤波**：双角度域 + `spatial × material × range` 三种权重，去噪但保留区域间方向边界。被 `all_layers_path_generation_v6` 通过 `params.field_filter_sigma > 0` 启用，置 0 回退到 `filter_orientation_simple` |
 | `Filter_density.m` | 密度场滤波 |
 | `calculate_straightness.m` | 路径直度量化 |
 | `recover_v6_clobber.m` | 恢复被 v6 误覆盖的中间变量 |
@@ -320,6 +322,7 @@ w = +sin(t_xoz)                ← 注意是 +，不是 −
 | voxel_refinement + extract_layer_2d_projection | 启用 `REFINE_FACTOR=3`：fine grid 去掉 `-0.5` 偏移以对齐原始采样 `[0.5, nelx-0.5]`；2D 投影改用 `grid_index` 整数下标（物理坐标 `.x/.y` 在 refine≥2 时非整数无法作数组下标） |
 | run_full_comparison 管线（10 issues 一并修，详见 [`docs/03`](docs/03_管线修复链_REFINE3启用.md)） | v6 系列脚本 function 化消除 `clear; clc;` 把 wrapper 局部变量清光；double-side host cell 尺寸修复（MATLAB 写 `dx/dy/dz` 进 `mesh_params.txt`，Python 读取，修前 host 被放大 REFINE_FACTOR 倍）；path 脚本 X/Y 方向 scale 改用 `grid_index` 反推真实 `dx_phys`（修前激活区窄方向上 path span 偏小 ~40%）；SKIP sentinel 与 Abaqus 端对齐；host 缺失自动重建；`BEAM_MANUAL_OFFSET` 默认 `(0,0,0)`；Stage 9 自动拷 4 个 path mat + `compute_path_statistics.m` 到 fea_dir |
 | plotTopologyWithMedialAxis / plotTopologyWithMedialAxis2 / single_layer_test | 流线生成的材料阈值 `th = prctile(xold,(1-volfrac)*100)*1.2` 是为连续密度场（SIMP `xPhys∈[0,1]`）设计，但切片管线经 `extract_layer_2d_projection` 喂进来的是二值掩膜（`{0,1}`）。当某层 2D 填充率 ≥ (1-volfrac)=50% 时 `prctile=1`、`th=1.2`>掩膜最大值、`find(xold>th)` 返空 → 无材料掩膜 → 0 条流线 + 轮廓退化成全域矩形。修复：空结果时回退 `find(xold>0)`（任意材料像素），连续密度场下基本不触发；触发时也比"返空"合理。验证（同一切片数据重跑路径）：总流线 89→287，零流线层 36/59→0/59 |
+| extract_layer_2d_projection（源头方向翻转修复，配套滤波 / 流线引擎升级） | 现象：跨层方向场逐层翻转，"前层方向场翻"导致流线断裂、不沿主应力贯穿。**根因 1**：方向用 `t_xoy` 角度定义，但 `uu = cos(t_xoz)·cos(t_xoy)`，约一半体素 `cos(t_xoz)<0`，使 `t_xoy` 的符号相对真实 σ1 矢量翻 180° 且**逐层不一致**。**根因 2**：一列里多个 z 的体素投影到同一 `(ix,iy)` 时旧版做"最后写入"覆盖，厚切层方向场带噪。**修复**：(a) 用 `(uu, vv)` 的面内分量定义方向；(b) 同列 z 在双角度域 `(cos2φ, sin2φ)` 累加平均（正确处理线场 180° 歧义）；(c) 用有符号矢量均值把真实指向对齐回来。**配套升级**：`filter_orientation_field`（双边保边方向场滤波，替换 `filter_orientation_simple`）+ `trace_principal_streamlines`（双角度 RK2 积分 + 符号相干 + 最长优先等间距 + 自动对称化，替换 `plotTopologyWithMedialAxis`）。两条新算法链都带 `if` 守卫保留旧实现作 fallback（`field_filter_sigma=0` 或 `use_advanced_streamlines=false`） |
 
 ---
 
