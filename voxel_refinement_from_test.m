@@ -72,7 +72,7 @@ if ~exist(DATA_FILE, 'file')
 end
 fprintf(' Loading: %s\n', DATA_FILE);
 fprintf(' Working dir: %s\n', pwd);
-S = load(DATA_FILE, 'nelx', 'nely', 'nelz', 'xPhys', 't_xoy', 't_xoz');
+S = load(DATA_FILE, 'nelx', 'nely', 'nelz', 'xPhys', 't_xoy', 't_xoz');;
 req = {'nelx','nely','nelz','xPhys','t_xoy','t_xoz'};
 for ii = 1:numel(req)
     if ~isfield(S, req{ii})
@@ -84,31 +84,16 @@ xPhys = S.xPhys; t_xoy = S.t_xoy; t_xoz = S.t_xoz;
 clear S;
 fprintf(' Grid: nelx=%d, nely=%d, nelz=%d\n', nelx, nely, nelz);
 fprintf(' xPhys: [%s], range [%.4f, %.4f]\n', mat2str(size(xPhys)), min(xPhys(:)), max(xPhys(:)));
-fprintf(' t_xoy: [%s], range [%.4f, %.4f]\n', mat2str(size(t_xoy)), min(t_xoy(:)), max(t_xoy(:)));
-fprintf(' t_xoz: [%s], range [%.4f, %.4f]\n', mat2str(size(t_xoz)), min(t_xoz(:)), max(t_xoz(:)));
 
 %% ========== Step 3: Parameters ==========
 fprintf('\n[Step 3] Configuration...\n');
 
 % ============ 尺寸与分辨率控制 ============
-ELEM_SIZE           = 3.0;        % 体素物理边长(mm). 放大就调大. 原始=1.0
-REFINE_FACTOR       = 3;          % 应力场采样加密倍数 (不影响物理尺寸)
+ELEM_SIZE           = 2;        % 体素物理边长(mm). 放大就调大. 原始=1.0
+REFINE_FACTOR       = 2;          % 应力场采样加密倍数 (不影响物理尺寸)
 LAYER_HEIGHT_MODE   = 'decouple'; % 'bind' 或 'decouple'(推荐)
-TARGET_LAYER_HEIGHT = 0.2;        % mm, 仅 decouple 模式用
+TARGET_LAYER_HEIGHT = 0.25;        % mm, 仅 decouple 模式用
 % ==========================================
-
-% --- 入参 sanity check (防止参数写错时崩在下游远处难定位) ---
-assert(isnumeric(ELEM_SIZE) && isscalar(ELEM_SIZE) && ELEM_SIZE > 0, ...
-    'ELEM_SIZE 必须是正实数, 当前: %s', mat2str(ELEM_SIZE));
-assert(isnumeric(REFINE_FACTOR) && isscalar(REFINE_FACTOR) && REFINE_FACTOR >= 1 ...
-    && REFINE_FACTOR == round(REFINE_FACTOR), ...
-    'REFINE_FACTOR 必须是 >=1 的正整数, 当前: %s', mat2str(REFINE_FACTOR));
-assert(any(strcmpi(LAYER_HEIGHT_MODE, {'bind','decouple'})), ...
-    'LAYER_HEIGHT_MODE 必须是 ''bind'' 或 ''decouple'', 当前: %s', LAYER_HEIGHT_MODE);
-if strcmpi(LAYER_HEIGHT_MODE, 'decouple')
-    assert(isnumeric(TARGET_LAYER_HEIGHT) && TARGET_LAYER_HEIGHT > 0, ...
-        'decouple 模式下 TARGET_LAYER_HEIGHT 必须是正数, 当前: %s', mat2str(TARGET_LAYER_HEIGHT));
-end
 
 INTERP_METHOD = 'linear';
 USE_SMOOTHING = true;

@@ -43,16 +43,35 @@ fprintf('================================================================\n\n');
 
 %% ========== 参数设置 ==========
 params = struct();
-params.offset_distance = 0.3;
+params.offset_distance = 0.4;
 params.max_iterations = 30;
 params.min_path_length = 2;
 params.volfrac = 0.5;
-params.filter_radius = 5;
+params.filter_radius = 5;          % (旧 filter_orientation_simple 用; 仅当 field_filter_sigma=0 时)
 params.filter_iterations = 2;
+% [方向场滤波] 双边(保特征)方向场滤波 (filter_orientation_field.m): 去噪但保留
+%   不同区域的向量特征 + 区域内平滑过渡. 设 sigma=0 回退旧 filter_orientation_simple.
+params.field_filter_sigma     = 1.0;   % 空间半径(px): 主控"半径". 注意有效σ≈sigma*sqrt(iters)
+params.field_filter_iters     = 1;     % 迭代次数: 主控"强度". (1次σ1.0=轻度, 保走向; 2次σ1.5=过平滑)
+params.field_filter_range_deg = inf;   % 特征容差(°): inf=普通高斯(适合本例的平滑渐变场);
+                                        %   设为有限值(如20~30)启用双边/保特征, 适合有尖锐方向边界的场
 params.min_region_area = 0.05;
 params.min_contour_length_inner = 4;
 params.contour_dilate_pixels = 3;
 params.contour_expand_ratio = 0.6;
+% [流线引擎] 升级版主应力流线 (trace_principal_streamlines.m):
+%   双角度场插值 + 符号相干双向积分 + 最长优先等间距选择.
+%   更长、更连续、更贴合主应力方向. 设 false 回退旧 plotTopologyWithMedialAxis.
+params.use_advanced_streamlines = true;
+params.streamline_opt = struct('d_sep',3.0,'step',0.5,'min_len',5,'min_len_frac',0.35, ...
+                               'min_coh',0.30,'max_overlap',0.35,'symmetry','auto','straight_w',0.5, ...
+                               'd_merge',0,'merge_ang_deg',20,'merge_frac',0.7);
+%   d_merge      去冗余距离(px,0=取d_sep): 比它近且近似平行的两条线只留较长的
+%   merge_frac   一条线>=此比例与已留线"近+平行"重叠 -> 判为冗余删除
+%   d_sep        主流线间距(px): 越大越少越疏
+%   min_len_frac 丢弃短于"该层最长线*此比例"的碎段 (相对去碎)
+%   symmetry     'auto'|'x'|'y'|'xy'|'none' 强制对称
+%   straight_w   选择时偏好直线的权重 (score=长度*直度^w)
 
 %% ========== Step 1: 检查工具箱 ==========
 fprintf('[Step 1] Checking toolboxes...\n');
@@ -496,8 +515,16 @@ function layer_result = process_single_layer(...
         scale_y = dy_phys;
         expand_dist = max(scale_x, scale_y) * params.contour_expand_ratio;
         
-        %% === 步骤4: 方向场滤波 ===
-        t_filtered = filter_orientation_simple(t, xold, params.filter_radius, params.filter_iterations);
+        %% === 步骤4: 方向场滤波 (清理应力场) ===
+        % 新: filter_orientation_field — 双角度 + 材料加权归一化卷积 + 迭代.
+        %   去噪但保留大尺度应力走向 (旧 filter_orientation_simple 半径过大,
+        %   会把辐射走向抹成近乎均匀方向). field_filter_sigma=0 时回退旧滤波.
+        if isfield(params,'field_filter_sigma') && params.field_filter_sigma > 0
+            t_filtered = filter_orientation_field(t, xold > 0, params.field_filter_sigma, ...
+                              params.field_filter_range_deg, params.field_filter_iters);
+        else
+            t_filtered = filter_orientation_simple(t, xold, params.filter_radius, params.filter_iterations);
+        end
         
         %% === 步骤5: 二值图像 + 3D有效性烧入 ===
         x_filter = zeros(nely, nelx);
@@ -640,8 +667,14 @@ function layer_result = process_single_layer(...
         end
         
         %% === 步骤8: 流线 ===
-        [~, ~, streamlines_raw, ~, ~, ~] = ...
-            plotTopologyWithMedialAxis(xold, t_filtered, nelx, nely, params.volfrac);
+        if isfield(params,'use_advanced_streamlines') && params.use_advanced_streamlines
+            % 升级引擎: 用烧入后的有效掩膜 x_filter, 双角度+符号相干双向积分+最长优先
+            streamlines_raw = trace_principal_streamlines(x_filter > 0, t_filtered, ...
+                                                          nelx, nely, params.streamline_opt);
+        else
+            [~, ~, streamlines_raw, ~, ~, ~] = ...
+                plotTopologyWithMedialAxis(xold, t_filtered, nelx, nely, params.volfrac);
+        end
         
         streamlines = {};
         for k = 1:length(streamlines_raw)
