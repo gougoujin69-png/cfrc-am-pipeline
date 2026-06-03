@@ -163,22 +163,29 @@ for L = 1:num_layers
         layer_voxels{L} = [];
         continue;
     end
-    % 构造和 v6 一致的 activated_grids struct array
+    % 构造和 v6 完全一致的 activated_grids struct array.
+    % [关键修复 2026-06] 旧写法逐字段重建, 只拷 x/y/z/t_xoy/t_xoz/xPhys/grid_index,
+    %   丢掉了 uu/vv/ww/is_valid. 而 extract_layer_2d_projection 在方向场重写后改用
+    %   sigma1 矢量的面内分量 (uu,vv) 定义方向 (修复跨层 180 度翻转), planar 缺这两个
+    %   字段就会报 "无法识别的字段名称 uu", 导致 planar_stream / planar_offset 全层失败.
+    %   改为整体拷贝 grid_data(i,j,k), 与 v6 的 detect_activation_on_surface 里
+    %   `gi = grid_data(i,j,k)` 同一来源, 继承 uu/vv/ww/is_valid 等全部字段, 使 planar
+    %   final_grids 成为 mine final_grids 的真正 drop-in (未来 grid_data 新增字段也自动同步).
     idx = find(mask);
     n_in_L = length(idx);
-    ag = struct('x', cell(1, n_in_L), 'y', cell(1, n_in_L), ...
-                'z', cell(1, n_in_L), 't_xoy', cell(1, n_in_L), ...
-                't_xoz', cell(1, n_in_L), 'xPhys', cell(1, n_in_L), ...
-                'grid_index', cell(1, n_in_L));
-    for q = 1:n_in_L
-        ii = idx(q);
-        ag(q).x          = all_xc(ii);
-        ag(q).y          = all_yc(ii);
-        ag(q).z          = all_zc(ii);
-        ag(q).t_xoy      = all_t_xoy(ii);
-        ag(q).t_xoz      = all_t_xoz(ii);
-        ag(q).xPhys      = all_density(ii);
-        ag(q).grid_index = all_ijk(ii,:);
+    % 用第一个体素做模板预分配, 保证字段集/顺序与 grid_data 完全一致
+    gjk0 = all_ijk(idx(1), :);
+    g0 = grid_data(gjk0(1), gjk0(2), gjk0(3));
+    g0.grid_index = gjk0;
+    g0.distance   = 0;          % planar 无"到曲面距离"含义, 置 0 仅为对齐 v6 字段集
+    ag = repmat(g0, 1, n_in_L);
+    for q = 2:n_in_L
+        ii  = idx(q);
+        gjk = all_ijk(ii, :);
+        g   = grid_data(gjk(1), gjk(2), gjk(3));  % 继承 uu/vv/ww/is_valid 等全部字段
+        g.grid_index = gjk;
+        g.distance   = 0;
+        ag(q) = g;
     end
     layer_voxels{L} = ag;
 end
