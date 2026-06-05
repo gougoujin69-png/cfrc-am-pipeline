@@ -53,7 +53,9 @@ fprintf('================================================================\n\n');
 
 %% ========== 参数 ==========
 params = struct();
-params.offset_distance        = 0.3;
+params.offset_distance        = 0.4;   % [默认/回退] 线宽; 实际值在 Step 2 由
+                                        %   slice_results.parameters.LINE_WIDTH 覆盖.
+                                        %   (旧默认 0.3, 现与 stream 统一为管线 LINE_WIDTH)
 params.max_iterations         = 30;
 params.min_path_length        = 2;
 params.volfrac                = 0.5;
@@ -94,6 +96,17 @@ grid_data        = slice_results.grid_data;
 num_layers       = length(surface_layers);
 valid_grid_mask  = slice_results.valid_grid_mask;
 fprintf('  Total layers: %d\n', num_layers);
+
+% [集中化] 线宽来自管线: 切片把 refined_data.parameters.LINE_WIDTH 盖章进
+%   slice_results.parameters.LINE_WIDTH. 覆盖上面的默认值, 保证与 stream 配置同一线宽.
+if isfield(slice_results, 'parameters') && isfield(slice_results.parameters, 'LINE_WIDTH')
+    params.offset_distance = slice_results.parameters.LINE_WIDTH;
+    fprintf('  [LINE_WIDTH] offset_distance = %.3f mm (继承自 slice_results, 管线统一)\n', ...
+        params.offset_distance);
+else
+    fprintf(['  [LINE_WIDTH] offset_distance = %.3f mm (回退默认; 该切片无 LINE_WIDTH, ' ...
+             '建议重跑切片以继承管线线宽)\n'], params.offset_distance);
+end
 
 %% ========== Step 2b: XY 结构遮罩 + Z 场 ==========
 structure_mask_poly = build_structure_mask(grid_data, valid_grid_mask);

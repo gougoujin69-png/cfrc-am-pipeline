@@ -1,0 +1,102 @@
+# Changelog
+
+本项目的修改日志。最新的改动在最上面。
+
+---
+
+## 2026-06-04 — Host 尺度一致性守卫 (ELEM_SIZE 拉大不再撞 Abaqus)
+
+### 背景 / 问题
+`voxel_refinement_from_test.m` 里把 `ELEM_SIZE` 拉大 (或改 `REFINE_FACTOR`) 后, 切片/路径
+的物理坐标按 `ELEM_SIZE` 放大。但 `export_paths_to_fea.m` 的 host 网格
+(`host/mesh_params.txt` + `valid_elements.txt`) 是**只写一次**的
+(`need_write_host = ... && ~exist(valid_elements.txt)`)，于是改了 `ELEM_SIZE` 重跑后，
+旧 host 仍是旧尺度 → `abaqus_cfrc_compare.py` 按旧 `dx` 建 host → **beam 路径范围远大于
+host 结构范围 → 嵌入 (EmbeddedRegion) 计算出错**。`force=true` 也救不了 (同一存在性判断)。
+
+### 改动
+**run_full_comparison.m — Stage 8 新增 host 尺度守卫 + 导出后 bbox 核查**
+- `host_scale_mismatch()`: 比对 `host/mesh_params.txt` 记录的 `(nelx,nely,nelz,dx,dy,dz)`
+  与当前 `voxel_refined_latest.mat` 的网格尺度。不一致 (或旧格式缺 `dx` 字段且当前 `dx≠1`)
+  → 判定 host 陈旧。
+- 陈旧 (或 `force=true`) 时自动删除旧 `mesh_params.txt` + `valid_elements.txt`，
+  使本 Stage 按当前 `ELEM_SIZE` 重写 host。
+- `verify_path_host_bbox()`: 导出后打印 host 结构 bbox vs beam 路径 bbox，
+  路径明显超出结构 (容差 = 跨度 20% 或 3mm) 时红字告警并提示 `force` 重跑。
+
+### 对比脚本是否受网格尺寸影响 (已核查, 无需改)
+- **compute_path_statistics.m (路径对比)**: 尺度安全。应力查表优先用
+  `voxel_refined_latest.mat` (Format A)，按精化网格自身的 `dx/x_min` 定位，天然随 `ELEM_SIZE`。
+  长度类指标是物理 mm，4 个配置同一 `ELEM_SIZE` → 相对对比有效。
+  (注意: 同一次 run 内的 4 配置可比; 跨不同 `ELEM_SIZE` 的历史结果, 绝对长度会按比例不同。)
+- **compare_fea_results.m (刚度对比)**: 尺度无关。只读 ODB 提取的 `U/F/RF` 算
+  `K=Σ(Fu)/Σ(u²)`，模型本身尺度一致即可 (由上面 host 守卫保证)。
+
+### 说明: voxelize.m 生成的 voxel_grid.inp 不需要随 ELEM_SIZE 改
+`voxel_grid.inp` 是**初始应力分析**用的 host (原始网格, `VoxelSize` 默认 1.0)。它产出的
+应力场 (方向角 + 密度) 是**尺度无关**的，`voxel_refinement` 会重新网格化并按 `ELEM_SIZE`
+放大。4-way 对比用的 host 是 `abaqus_cfrc_compare.py` 从 `valid_elements.txt` **独立重建**的
+(已随 `ELEM_SIZE`)，并不使用 `voxel_grid.inp`。故初始 host 与对比 host 互不影响。
+
+---
+
+## 2026-06-04 — 对比管线参数集中化 + 线宽统一
+
+### 背景 / 问题
+`run_full_comparison.m` 做 4-way 对比 —— (曲面 mine / 平面 planar) × (流线 stream / 偏置 offset)。
+原本各脚本的几何与工艺参数**分散硬编码、彼此不一致**，导致 4 个配置并非在"完全相同条件"下生成：
+
+- **线宽不一致**：流线路径 `offset_distance = 0.4`，偏置路径 `offset_distance = 0.3`，分别硬编码在两个文件里，无法从管线统一控制。
+- **平面切片未接入管线**：`generate_planar_slicing.m` 硬编码 `LAYER_THICKNESS_ORIG = 1.0`（魔数），曲面分辨率用 `surf_res = h*0.5`，且不读取 `GRID_STEP`；注释还引用了早已不存在的旧 v6 公式 `OFFSET_STEP = OFFSET_STEP_ORIG * SCALE_FACTOR`（当前 v6 实为 `OFFSET_STEP = SCALE_FACTOR`）。
+
+### 方案
+建立**单一数据源**，让层高与线宽沿管线流动：
+
+```
+voxel_refinement_from_test.m  (LINE_WIDTH = 0.4 在此定义)
+        │  写入 refined_data.parameters.LINE_WIDTH
+        ├──► slice_refined_model_v6.m   ─┐ 读取并盖章进 slice_results.parameters
+        └──► generate_planar_slicing.m  ─┘
+                    │  slice_results.parameters.LINE_WIDTH
+                    ├──► all_layers_path_generation_v6.m  (offset_distance ← LINE_WIDTH)
+                    ├──► path_generation_offset_only.m    (offset_distance ← LINE_WIDTH)
+                    └──► interactive_path_planning_v28.m  (GUI 默认线宽 ← LINE_WIDTH)
+```
+
+- **线宽统一为 0.4mm**：4 个对比配置共用同一线宽来源；改 `voxel_refinement_from_test.m` 里一个 `LINE_WIDTH` 即全部联动。
+- **平面切片对齐曲面 v6**：从 `refined_data.parameters` 继承全部几何参数。
+
+### 改动文件
+1. **voxel_refinement_from_test.m**
+   - 新增控制参数 `LINE_WIDTH = 0.4`（4-way 对比线宽的唯一来源）。
+   - 写入 `refined_data.parameters.LINE_WIDTH`；更新顶部参数说明注释。
+2. **slice_refined_model_v6.m**（曲面切片）
+   - 读取 `refined_data.parameters.LINE_WIDTH`（缺失回退 0.4），透传盖章进 `slice_results.parameters.LINE_WIDTH`。
+   - `slice_results.parameters` 增加 `GRID_STEP`、`LINE_WIDTH` 字段。
+3. **generate_planar_slicing.m**（平面切片，核心整改）
+   - 删除魔数 `LAYER_THICKNESS_ORIG = 1.0`；层高直接 `LAYER_THICKNESS_MM = SCALE_FACTOR`（≡ v6 `OFFSET_STEP`）。
+   - 从管线继承 `GRID_STEP = ELEM_SIZE/REFINE_FACTOR`、`SURFACE_RESOLUTION = 0.35*GRID_STEP`、`DENSITY_THRESHOLD`。
+   - 曲面网格分辨率 `surf_res` 由 `h*0.5` 改为 `SURFACE_RESOLUTION`（与 v6 同源）。
+   - Z 高度场改用体素中心原始 min/max（不再 ±h/2 过度外扩），painting 半径随 `GRID_STEP`；边界容差统一交给下游 `z_margin`，与 v6 烧入语义一致。
+   - `slice_results.parameters` 盖章 `LINE_WIDTH / GRID_STEP / SURFACE_RESOLUTION / OFFSET_STEP`。
+4. **all_layers_path_generation_v6.m**（流线路径）
+   - 加载切片后用 `slice_results.parameters.LINE_WIDTH` 覆盖 `offset_distance`（缺失回退 0.4）。
+5. **path_generation_offset_only.m**（偏置路径）
+   - 同上；默认值由 `0.3` 改为统一的 `0.4`。
+6. **interactive_path_planning_v28.m**（交互式 GUI）
+   - 启动加载切片后，每层默认线宽继承自 `slice_results.parameters.LINE_WIDTH`（回退 0.4）。
+   - "偏置距离" 输入框初始值由硬编码 `0.3` 改为读每层默认线宽。
+   - `default_params()` 回退值 `0.3 → 0.4`。
+
+### 验证
+- MATLAB `checkcode` 静态检查全部修改文件：无语法错误（仅余既有风格提示）。
+- 合成体素（含 `LINE_WIDTH`）跑通整条平面切片：层高/`GRID_STEP`/`SURFACE_RESOLUTION`/`LINE_WIDTH` 正确盖章并被路径生成读到；魔数字段已消失。
+
+### 升级 / 使用注意
+- **需重跑才能生效**：`run_full_comparison()` 默认跳过已存在产物。磁盘上现有的 offset 路径 mat 是用旧线宽 0.3 生成的（陈旧）。
+- 推荐刷新流程：
+  ```matlab
+  run('voxel_refinement_from_test.m')   % 让 LINE_WIDTH=0.4 写进体素 mat
+  run_full_comparison('force', true)     % 强制重切 + 重生成 4 套路径
+  ```
+- 切片器在缺 `LINE_WIDTH` 时回退 0.4 并盖章，故即使不重跑 voxel_refinement，强制重跑 `run_full_comparison` 结果线宽也是 0.4（只是体素文件不显式记录线宽，可追溯性稍弱）。

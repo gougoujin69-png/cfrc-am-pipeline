@@ -43,7 +43,8 @@ fprintf('================================================================\n\n');
 
 %% ========== 参数设置 ==========
 params = struct();
-params.offset_distance = 0.4;
+params.offset_distance = 0.4;      % [默认/回退] 线宽; 实际值在 Step 2 由
+                                   %   slice_results.parameters.LINE_WIDTH 覆盖 (管线统一)
 params.max_iterations = 30;
 params.min_path_length = 2;
 params.volfrac = 0.5;
@@ -116,6 +117,19 @@ num_layers = slice_results.statistics.num_layers;
 valid_grid_mask = slice_results.valid_grid_mask;
 
 fprintf('  Total layers: %d\n', num_layers);
+
+% [集中化] 线宽来自管线: 切片把 refined_data.parameters.LINE_WIDTH 盖章进
+%   slice_results.parameters.LINE_WIDTH. 这里覆盖上面的默认值, 保证 mine_stream/
+%   planar_stream/mine_offset/planar_offset 四个配置用同一线宽 (run_full_comparison
+%   在"完全相同线宽"下出结果). 旧切片无此字段时保留默认并提示.
+if isfield(slice_results, 'parameters') && isfield(slice_results.parameters, 'LINE_WIDTH')
+    params.offset_distance = slice_results.parameters.LINE_WIDTH;
+    fprintf('  [LINE_WIDTH] offset_distance = %.3f mm (继承自 slice_results, 管线统一)\n', ...
+        params.offset_distance);
+else
+    fprintf(['  [LINE_WIDTH] offset_distance = %.3f mm (回退默认; 该切片无 LINE_WIDTH, ' ...
+             '建议重跑切片以继承管线线宽)\n'], params.offset_distance);
+end
 
 %% ========== Step 2b [NEW]: 加载 Z 高度场 + XY 遮罩 ==========
 fprintf('\n[Step 2b] Loading structure validity data...\n');

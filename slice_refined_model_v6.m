@@ -103,6 +103,17 @@ else
     GRID_STEP = SCALE_FACTOR;   % 旧数据兼容: 旧 SCALE_FACTOR 本就是网格间距
 end
 
+% [集中化] 路径线宽来自管线 (voxel_refinement_from_test.m). 这里只透传:
+%   读 refined_data.parameters.LINE_WIDTH, 盖章进 slice_results.parameters.LINE_WIDTH,
+%   下游 all_layers_path_generation_v6 / path_generation_offset_only 读它作 offset_distance.
+%   旧体素数据无此字段时回退 0.4 (与 generate_planar_slicing 回退值一致).
+if isfield(refined_data.parameters,'LINE_WIDTH')
+    LINE_WIDTH = refined_data.parameters.LINE_WIDTH;
+else
+    LINE_WIDTH = 0.4;
+    fprintf('  [WARN] refined_data 无 LINE_WIDTH, 回退 %.3f mm (建议重跑 voxel_refinement)\n', LINE_WIDTH);
+end
+
 OFFSET_STEP         = SCALE_FACTOR;        % 层高 (独立)
 INITIAL_THRESHOLD   = 0.70 * GRID_STEP;    % 激活阈值随物理网格间距 (关键修复)
 THRESHOLD_INCREMENT = 0.50 * GRID_STEP;
@@ -119,6 +130,7 @@ DERIV_SMOOTH_SIGMA = 3.0;   % BASE Gaussian sigma (will be adaptively increased)
 MEDFILT_SIZE = 5;            % BASE median filter window (will be adaptively increased)
 
 fprintf('  OFFSET_STEP: %.4f, SURFACE_RESOLUTION: %.5f\n', OFFSET_STEP, SURFACE_RESOLUTION);
+fprintf('  GRID_STEP: %.4f, LINE_WIDTH(透传): %.4f\n', GRID_STEP, LINE_WIDTH);
 fprintf('  NZ_FLOOR: %.2f, DERIV_SMOOTH_SIGMA: %.1f, MEDFILT: %d\n', ...
     NZ_FLOOR, DERIV_SMOOTH_SIGMA, MEDFILT_SIZE);
 
@@ -604,6 +616,8 @@ slice_results.parameters = struct(...
     'NEW_ACTIVATION_THRESHOLD', NEW_ACTIVATION_THRESHOLD, ...
     'MAX_OFFSET', MAX_OFFSET, ...
     'SCALE_FACTOR', SCALE_FACTOR, ...
+    'GRID_STEP', GRID_STEP, ...
+    'LINE_WIDTH', LINE_WIDTH, ...
     'NZ_FLOOR', NZ_FLOOR, ...
     'DERIV_SMOOTH_SIGMA', DERIV_SMOOTH_SIGMA);
 slice_results.surface_params = struct(...

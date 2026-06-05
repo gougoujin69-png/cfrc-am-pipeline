@@ -26,9 +26,10 @@ helper_files = {
     'extract_fea_results.py', ...
     'run_compare.m', ...
     'compare_fea_results.m', ...
-    'compute_path_statistics.m', ...
     'diagnose_loadpoint.py', ...
 };
+% NOTE: compute_path_statistics.m is NOT copied here - it lives in script_dir
+% and reads/writes from there directly.
 
 % ===== 参数 =====
 p = inputParser;
@@ -199,12 +200,38 @@ if any(stages_to_run == 8)
         'all_layers_paths_only_planar_offset.mat',  'planar_offset'; ...
     };
 
+    % ===== [NEW 2026-06] Host 尺度一致性守卫 =====
+    % 问题: export_paths_to_fea 的 host (mesh_params.txt + valid_elements.txt) 是
+    %   "只写一次"的 (valid_elements.txt 存在就跳过). 当你在 voxel_refinement 里把
+    %   ELEM_SIZE 拉大 (或改 REFINE_FACTOR/原始网格), 当前体素的物理网格步长 dx 变了,
+    %   但旧 host 仍是旧尺度 -> abaqus_cfrc_compare.py 按旧 dx 建 host -> beam 路径范围
+    %   远大于 host 结构范围 -> 嵌入计算 (EmbeddedRegion) 出错.
+    % 守卫: 比对 host/mesh_params.txt 记录的 (nelx,nely,nelz,dx,dy,dz) 与当前体素 mat,
+    %   不一致 (或 force=true) 就删掉旧 host, 让本 Stage 按当前 ELEM_SIZE 重建.
+    host_dir_chk     = fullfile(fea_dir, 'host');
+    voxel_mat_host   = 'voxel_refined_latest.mat';   % export_paths_to_fea 也用这个建 host
+    [host_stale, stale_msg] = host_scale_mismatch(host_dir_chk, voxel_mat_host);
+    if force_all && exist(fullfile(host_dir_chk, 'valid_elements.txt'), 'file')
+        host_stale = true;
+        stale_msg  = 'force=true: 强制按当前 ELEM_SIZE 重建 host';
+    end
+    if host_stale
+        fprintf('  [HOST] %s\n', stale_msg);
+        for fdel = {'mesh_params.txt', 'valid_elements.txt'}
+            fp = fullfile(host_dir_chk, fdel{1});
+            if exist(fp, 'file')
+                delete(fp);
+                fprintf('  [HOST] 已删除旧 %s (将按新尺度重写)\n', fdel{1});
+            end
+        end
+    end
+
     % Detect missing host/ data. The standalone export_paths_to_fea.m writes
     % host/mesh_params.txt + host/valid_elements.txt only on first invocation
     % (when valid_elements.txt does not yet exist). If beam_paths from a
     % previous run already exist, all 4 configs SKIP and host never gets
     % written. Force-rerun the first config when host is missing to break
-    % that deadlock.
+    % that deadlock. (尺度守卫已在上面把陈旧 host 删掉, 这里会判定为缺失并重写.)
     host_valid_txt   = fullfile(fea_dir, 'host', 'valid_elements.txt');
     host_needs_write = ~exist(host_valid_txt, 'file');
     if host_needs_write
@@ -256,6 +283,10 @@ if any(stages_to_run == 8)
         end
     end
 
+    % ===== [NEW 2026-06] 导出后核对: beam 路径 bbox vs host 结构 bbox =====
+    % 直观确认"路径范围没有超出结构范围"(尺度一致). 超出会红字告警.
+    verify_path_host_bbox(fea_dir, pairs);
+
     host_inp = fullfile(fea_dir, 'EmbeddedBeamModel.inp');
     if exist(host_inp, 'file') && ~force_all
         fprintf('  [SKIP] host inp already at %s\n', host_inp);
@@ -281,33 +312,6 @@ if any(stages_to_run == 9)
             fprintf('  [OK]   %s  -> %s\n', helper_files{k}, dst);
         catch err
             fprintf('  [FAIL] copy %s: %s\n', helper_files{k}, err.message);
-        end
-    end
-
-    % --- 同步复制 4 个 path mat 到 fea_dir ---
-    % compute_path_statistics 是从 pwd 搜 mat 的, 而 run_compare cd 到 fea_dir
-    % 之后 pwd = fea_dir. 把 4 份 mat 拷过来才能让 run_compare('all') / ('stats')
-    % 在 fea_dir 自给自足 (不依赖 MATLAB 项目目录在 path 里).
-    fprintf('\n  Copying 4 path mat files for run_compare(''stats''/''all''):\n');
-    path_mats = { ...
-        'all_layers_paths_only_v3.mat', ...
-        'all_layers_paths_only_mine_offset.mat', ...
-        'all_layers_paths_only_planar_stream.mat', ...
-        'all_layers_paths_only_planar_offset.mat', ...
-    };
-    for k = 1:numel(path_mats)
-        src = fullfile(script_dir, path_mats{k});
-        dst = fullfile(fea_dir, path_mats{k});
-        if ~exist(src, 'file')
-            fprintf('  [WARN] path mat missing: %s\n', src);
-            continue;
-        end
-        try
-            copyfile(src, dst, 'f');
-            d = dir(dst);
-            fprintf('  [OK]   %s  (%.1f MB)\n', path_mats{k}, d.bytes/1e6);
-        catch err
-            fprintf('  [FAIL] copy %s: %s\n', path_mats{k}, err.message);
         end
     end
 end
@@ -374,3 +378,172 @@ fprintf('    target:      %s\n', target_mat);
 path_generation_offset_only(slice_mat, target_mat);
 end
 
+
+% =================================================================
+% Host 尺度一致性 (ELEM_SIZE 改变检测)
+% =================================================================
+function [stale, msg] = host_scale_mismatch(host_dir, voxel_mat)
+% 比对已写出的 host/mesh_params.txt 与当前体素 mat 的网格尺度.
+%   stale=true  -> 需要按当前 ELEM_SIZE 重建 host
+%   host 不存在 -> stale=false (交给后续"缺失"逻辑处理)
+stale = false; msg = '';
+mp = fullfile(host_dir, 'mesh_params.txt');
+ve = fullfile(host_dir, 'valid_elements.txt');
+if ~exist(mp, 'file') || ~exist(ve, 'file')
+    return;   % host 尚未生成, 不算 stale
+end
+if ~exist(voxel_mat, 'file')
+    return;   % 没有体素 mat 可比对
+end
+
+% 当前体素 mat 的网格尺度 (与 export_paths_to_fea/write_host_mesh 同源算法)
+S = load(voxel_mat, 'refined_data');
+rd = S.refined_data;
+nx = rd.grid_size.nelx; ny = rd.grid_size.nely; nz = rd.grid_size.nelz;
+gd = rd.grid_data;
+if nx >= 2, cur_dx = gd(2,1,1).x - gd(1,1,1).x; else, cur_dx = 1.0; end
+if ny >= 2, cur_dy = gd(1,2,1).y - gd(1,1,1).y; else, cur_dy = 1.0; end
+if nz >= 2, cur_dz = gd(1,1,2).z - gd(1,1,1).z; else, cur_dz = 1.0; end
+
+P = read_mesh_params_file(mp);
+tol = 1e-3;
+reasons = {};
+
+% 整数维度比对
+dim_keys = {'nelx', nx; 'nely', ny; 'nelz', nz};
+for di = 1:size(dim_keys, 1)
+    kk = dim_keys{di, 1}; cur = dim_keys{di, 2};
+    if isfield(P, kk) && P.(kk) ~= cur
+        reasons{end+1} = sprintf('%s %g->%d', kk, P.(kk), cur); %#ok<AGROW>
+    end
+end
+
+% 物理步长比对 (dx/dy/dz)
+step_keys = {'dx', cur_dx; 'dy', cur_dy; 'dz', cur_dz};
+for di = 1:size(step_keys, 1)
+    kk = step_keys{di, 1}; cur = step_keys{di, 2};
+    if isfield(P, kk) && abs(P.(kk) - cur) > tol
+        reasons{end+1} = sprintf('%s %.4f->%.4f', kk, P.(kk), cur); %#ok<AGROW>
+    end
+end
+
+% 旧格式 mesh_params.txt 没写 dx 字段: Python 端会回退 1.0; 若当前 dx≠1.0 则尺度会错
+if ~isfield(P, 'dx') && abs(cur_dx - 1.0) > tol
+    reasons{end+1} = sprintf('host 缺 dx 字段且当前 dx=%.4f≠1.0 (Python 回退 1.0 -> 尺度错)', cur_dx); %#ok<AGROW>
+end
+
+if ~isempty(reasons)
+    stale = true;
+    msg = sprintf('检测到 host 尺度与当前体素不一致 [%s]', strjoin(reasons, ', '));
+end
+end
+
+
+function P = read_mesh_params_file(mp)
+% 解析 host/mesh_params.txt 的 "key value" 行 (# 为注释).
+P = struct();
+fid = fopen(mp, 'r');
+if fid < 0, return; end
+while ~feof(fid)
+    line = strtrim(fgetl(fid));
+    if isempty(line) || line(1) == '#', continue; end
+    parts = strsplit(line);
+    if numel(parts) >= 2
+        key = matlab.lang.makeValidName(parts{1});
+        val = str2double(parts{2});
+        if ~isnan(val), P.(key) = val; end
+    end
+end
+fclose(fid);
+end
+
+
+% =================================================================
+% 导出后核对: beam 路径 bbox vs host 结构 bbox
+% =================================================================
+function verify_path_host_bbox(fea_dir, pairs)
+host_ve = fullfile(fea_dir, 'host', 'valid_elements.txt');
+if ~exist(host_ve, 'file')
+    fprintf('  [BBOX] host valid_elements.txt 不存在, 跳过核对\n');
+    return;
+end
+M = read_valid_elements_xyz(host_ve);
+if isempty(M)
+    fprintf('  [BBOX] host valid_elements.txt 无可读坐标, 跳过\n');
+    return;
+end
+hx = [min(M(:,1)) max(M(:,1))];
+hy = [min(M(:,2)) max(M(:,2))];
+hz = [min(M(:,3)) max(M(:,3))];
+
+pbb = []; used_cfg = '';
+for k = 1:size(pairs,1)
+    mf = pairs{k,1};
+    if exist(mf, 'file')
+        pbb = path_mat_bbox(mf);
+        if ~isempty(pbb), used_cfg = pairs{k,2}; break; end
+    end
+end
+if isempty(pbb)
+    fprintf('  [BBOX] 找不到可读的 path mat, 跳过核对\n');
+    return;
+end
+
+fprintf('  [BBOX] host 结构范围(体素中心 mm): X[%.2f,%.2f] Y[%.2f,%.2f] Z[%.2f,%.2f]\n', ...
+    hx(1),hx(2), hy(1),hy(2), hz(1),hz(2));
+fprintf('  [BBOX] beam 路径范围(%s mm):  X[%.2f,%.2f] Y[%.2f,%.2f] Z[%.2f,%.2f]\n', ...
+    used_cfg, pbb(1),pbb(2), pbb(3),pbb(4), pbb(5),pbb(6));
+
+spanx = hx(2)-hx(1); spany = hy(2)-hy(1); spanz = hz(2)-hz(1);
+tolx = max(0.2*spanx, 3); toly = max(0.2*spany, 3); tolz = max(0.2*spanz, 3);
+over = (pbb(1) < hx(1)-tolx) || (pbb(2) > hx(2)+tolx) || ...
+       (pbb(3) < hy(1)-toly) || (pbb(4) > hy(2)+toly) || ...
+       (pbb(5) < hz(1)-tolz) || (pbb(6) > hz(2)+tolz);
+if over
+    fprintf(2, '  [BBOX][WARN] beam 路径明显超出 host 结构范围! host 尺度可能与路径不一致.\n');
+    fprintf(2, '              请确认 voxel_refinement 的 ELEM_SIZE 与生成这些路径时一致;\n');
+    fprintf(2, '              如刚改过 ELEM_SIZE, 用 run_full_comparison(''force'', true) 全量重跑.\n');
+else
+    fprintf('  [BBOX] OK: beam 路径落在 host 结构范围内 (尺度一致)\n');
+end
+end
+
+
+function M = read_valid_elements_xyz(fp)
+% 读 valid_elements.txt 的 xc yc zc (第 5,6,7 列), # 为注释.
+M = [];
+fid = fopen(fp, 'r');
+if fid < 0, return; end
+C = textscan(fid, '%f %f %f %f %f %f %f', 'CommentStyle', '#');
+fclose(fid);
+if numel(C) >= 7 && ~isempty(C{5})
+    M = [C{5}, C{6}, C{7}];
+end
+end
+
+
+function bb = path_mat_bbox(mat_file)
+% 返回 paths_only.layer_paths_3d 所有点的 bbox = [xmin xmax ymin ymax zmin zmax].
+bb = [];
+try
+    S = load(mat_file, 'paths_only');
+    po = S.paths_only;
+    if ~isfield(po, 'layer_paths_3d'), return; end
+    mn = [inf inf inf]; mx = [-inf -inf -inf];
+    L = po.layer_paths_3d;
+    for li = 1:numel(L)
+        pl = L{li};
+        if isempty(pl), continue; end
+        for q = 1:numel(pl)
+            pts = pl{q};
+            if isempty(pts) || size(pts,2) < 3, continue; end
+            mn = min(mn, min(pts(:,1:3), [], 1));
+            mx = max(mx, max(pts(:,1:3), [], 1));
+        end
+    end
+    if all(isfinite(mn))
+        bb = [mn(1) mx(1) mn(2) mx(2) mn(3) mx(3)];
+    end
+catch
+end
+end
