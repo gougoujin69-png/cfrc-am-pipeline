@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-06-04 — 修复 FEA 刚度提取 (K 混乱的根因)
+
+### 背景 / 问题
+`run_compare` / `compare_fea_results.m` 算出的刚度 K 极其混乱:
+mine_stream K=3.5e7, mine_offset=3.5e5, planar_offset=4.9e4 —— 数量级离谱且与
+beam 数量强相关 (beam 越多 K 越大)。根因在 `extract_fea_results.py`:
+
+1. **LoadPoint 集缺失 -> 退化为"全节点平均"**: 模型里没有名为 `LoadPoint` 的
+   装配节点集 (summary.txt 里 `num_load_nodes=0`)。提取脚本找不到它时, 旧逻辑
+   `collect_from_field_output(step, [])` 用 **全部节点** 求位移平均, 使 u_loadpt≈0
+   (大部分结构几乎不动), K=F/u 被放大成与节点数 (≈beam 数) 成反比的假值。
+   这就是 4 个配置 K 互相"混乱"的真正原因。
+2. **`sum` 被 Abaqus 覆盖**: `from abaqusConstants import *` 会覆盖内建 `sum`,
+   在 `abaqus python` 下 `sum([...])` 抛 "illegal argument type for built-in
+   operation" (在 `abaqus cae noGUI` 下恰好没覆盖, 所以旧版能跑出 K —— 那 K 仍是
+   假值)。
+
+### 改动 (extract_fea_results.py)
+- **CF 自动定位载荷点**: 当 `LoadPoint` 集缺失时, 不再全节点平均, 而是从 CF
+  (集中力) 场自动识别载荷补丁 = 所有施加了非零 CF 的节点; 每帧取该补丁的
+  **U 平均**(载荷点位移) + **CF 求和**(总外载), K=总F/平均u 是真实的载荷点刚度,
+  与 beam 数无关。(`collect_loadpoint_from_cf`, 替换原全节点回退)
+- **恢复被覆盖的内建函数**: 顶部 `from __builtin__ import sum, min, max, abs,
+  float, sorted, len, range, zip`, 保证脚本在 `abaqus python` 和
+  `abaqus cae noGUI` 两种启动方式下都稳。
+
+### 验证
+- 单配置 (planar_offset) 实测: 旧 K=48622 (全节点平均假值) -> 新 K=6959 N/mm
+  (= 180N / 0.0259mm, 真实载荷点刚度)。load patch 正确识别为 9 节点, 总 CF=180N。
+
+### 仍待解决: planar_stream 作业失败 (与提取无关)
+`Job_planar_stream.odb` 只有 9MB、0 帧, 无 `.sta`/`.msg` -> Abaqus 作业在 pre.exe
+(输入处理) 阶段崩溃, 未产出任何增量。planar_stream 是退化几何最多的配置
+(abaqus_cfrc_compare.py 里有 40+ 条 blacklist)。这是**模型几何**问题, 不是提取问题:
+需让该 Abaqus 作业本身跑通 (重跑; 若反复崩溃则需扩 blacklist 或重新生成更干净的
+planar_stream 路径)。提取脚本对 0 帧 ODB 已能优雅跳过 (status OK, K=0)。
+
+---
+
 ## 2026-06-04 — Host 尺度一致性守卫 (ELEM_SIZE 拉大不再撞 Abaqus)
 
 ### 背景 / 问题
