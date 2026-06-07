@@ -1,6 +1,14 @@
 %% ================================================================
-%% 全层路径生成 - 纯偏置 (Offset-Only)
+%% 全层路径生成 - 纯偏置 (Offset-Only)   [已弃用 / DEPRECATED 2026-06]
 %% ================================================================
+%
+% ⚠ 已弃用: 这是早期独立实现的偏置路径生成, 与 all_layers_path_generation_v6
+%   的偏置机制重复("造新轮子"), 且整块区域只迭代 max_iterations=30 环, 对宽区域
+%   覆盖不全 (中心留空)。run_full_comparison 不再调用本脚本。
+%   现在 mine_offset / planar_offset 改走:
+%     all_layers_path_generation_v6(slice, out, full, struct('offset_only', true))
+%   —— 复用同一套区域+偏置机制, 强制主流线=0, 整块纯偏置 + 高迭代上限 -> 完全覆盖。
+%   本文件保留仅作历史参考, 勿在管线中使用。
 %
 % 用途: 给 mine_offset / planar_offset 这两个对照组生成路径.
 %       相对 all_layers_path_generation_v6.m, 砍掉了:

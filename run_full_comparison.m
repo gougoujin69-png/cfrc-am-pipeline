@@ -372,10 +372,14 @@ end
 
 
 function generate_offset_paths(slice_mat, target_mat)
-% Pure offset path generation (no stream).
+% 纯偏置路径: 复用 all_layers_path_generation_v6 的同一套区域+偏置机制, 强制主流线=0
+% (offset_only 模式), 整块有效区域纯偏置填充 -> 完全覆盖. 不再走早期那套独立实现
+% path_generation_offset_only.m (会覆盖不全).
 fprintf('    using slice: %s\n', slice_mat);
 fprintf('    target:      %s\n', target_mat);
-path_generation_offset_only(slice_mat, target_mat);
+[~, base, ~] = fileparts(target_mat);
+full_results = sprintf('%s_full.mat', base);
+all_layers_path_generation_v6(slice_mat, target_mat, full_results, struct('offset_only', true));
 end
 
 

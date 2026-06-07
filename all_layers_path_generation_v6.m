@@ -1,4 +1,4 @@
-function all_layers_path_generation_v6(slice_file, output_file, full_results_file)
+function all_layers_path_generation_v6(slice_file, output_file, full_results_file, opts)
 %% ========================================
 %% 全层路径生成 V6 — 结构遮罩裁剪 + parfor 并行
 %% ========================================
@@ -30,6 +30,13 @@ end
 if nargin < 3 || isempty(full_results_file)
     full_results_file = 'all_layers_path_results_v3.mat';
 end
+% [offset_only 模式] opts.offset_only=true: 强制主流线数量为 0, 整块有效区域纯偏置
+%   填充 (复用本脚本同一套区域+偏置机制, 不再走 path_generation_offset_only 那套
+%   重复实现). 用于 mine_offset / planar_offset 对照组.
+if nargin < 4 || isempty(opts)
+    opts = struct();
+end
+if ~isfield(opts, 'offset_only'), opts.offset_only = false; end
 
 warning('off', 'MATLAB:polyshape:repairedBySimplify');
 warning('off', 'MATLAB:polyshape:boundary3Points');
@@ -73,6 +80,22 @@ params.streamline_opt = struct('d_sep',3.0,'step',0.5,'min_len',5,'min_len_frac'
 %   min_len_frac 丢弃短于"该层最长线*此比例"的碎段 (相对去碎)
 %   symmetry     'auto'|'x'|'y'|'xy'|'none' 强制对称
 %   straight_w   选择时偏好直线的权重 (score=长度*直度^w)
+
+% [offset_only] 纯偏置对照组: 强制主流线=0 + 提高偏置迭代上限保证完全覆盖.
+params.offset_only = opts.offset_only;
+if params.offset_only
+    % 不切区域时, 偏置环要从边界一直填到区域中轴才算完全覆盖; max_iterations=30
+    % (≈30*线宽 mm) 对宽区域不够, 中心会留空 —— 这正是旧 path_generation_offset_only
+    % "覆盖不全"的根因. 提高到足以填满最宽区域. generate_offset_path2 在区域收缩到
+    % min_path_length 后自动 break, 故高上限只是天花板, 薄区域仍早停, 不空跑.
+    if isfield(opts, 'offset_max_iter') && ~isempty(opts.offset_max_iter)
+        params.max_iterations = opts.offset_max_iter;
+    else
+        params.max_iterations = max(params.max_iterations, 200);
+    end
+    fprintf('  [offset_only] 强制主流线=0, 整块有效区域纯偏置填充, max_iterations=%d\n', ...
+        params.max_iterations);
+end
 
 %% ========== Step 1: 检查工具箱 ==========
 fprintf('[Step 1] Checking toolboxes...\n');
@@ -370,6 +393,8 @@ fprintf('  Saved: %s\n', full_results_file);
 
 paths_only = struct();
 paths_only.num_layers = num_layers;
+if params.offset_only, paths_only.mode = 'offset_only'; else, paths_only.mode = 'stream'; end
+paths_only.source_slice_file = slice_file;
 paths_only.layer_paths_2d = cell(num_layers, 1);
 paths_only.layer_paths_3d = cell(num_layers, 1);
 paths_only.layer_offsets = zeros(num_layers, 1);
@@ -681,7 +706,11 @@ function layer_result = process_single_layer(...
         end
         
         %% === 步骤8: 流线 ===
-        if isfield(params,'use_advanced_streamlines') && params.use_advanced_streamlines
+        if isfield(params,'offset_only') && params.offset_only
+            % offset_only 对照组: 强制主流线数量为 0. 后续步骤 11 在无流线时不切区域,
+            % 整块有效区域走步骤 13 的纯偏置填充 (与 stream 配置同一套偏置机制).
+            streamlines_raw = {};
+        elseif isfield(params,'use_advanced_streamlines') && params.use_advanced_streamlines
             % 升级引擎: 用烧入后的有效掩膜 x_filter, 双角度+符号相干双向积分+最长优先
             streamlines_raw = trace_principal_streamlines(x_filter > 0, t_filtered, ...
                                                           nelx, nely, params.streamline_opt);

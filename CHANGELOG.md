@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-06-04 — 纯偏置改用 v6 偏置机制 (offset_only 模式), 修复覆盖不全
+
+### 背景 / 问题
+偏置对照组 (mine_offset / planar_offset) 用的是早期独立实现 `path_generation_offset_only.m`
+("造新轮子")。它整块区域只迭代 `max_iterations=30` 环 (≈30×线宽 mm), 对宽区域**覆盖不全**
+(边界向内偏置到 ~12mm 就停, 中心留空) —— 重大错误。
+
+而 `all_layers_path_generation_v6.m` 的偏置之所以覆盖好, 是因为流线把区域切成窄条, 每条
+几环就填满。
+
+### 方案
+不再另起炉灶: 偏置对照组改走**同一个** `all_layers_path_generation_v6`, 新增 `offset_only`
+模式 —— 强制主流线数量为 0, 整块有效区域纯偏置填充, 复用完全相同的区域+偏置机制。
+
+### 改动
+- **all_layers_path_generation_v6.m**: 新增第 4 参数 `opts.offset_only`。
+  - 步骤 8: `offset_only` 时强制 `streamlines_raw = {}` (主流线=0)。下游步骤 11 无流线则
+    不切区域, 整块走步骤 13 的 `generate_offset_path2` 纯偏置。
+  - 不切区域时偏置环要从边界一直填到中轴才算覆盖完整, 故 `offset_only` 模式把
+    `max_iterations` 提到 200 (`generate_offset_path2` 区域收缩到 `min_path_length` 后自动
+    break, 高上限只是天花板, 薄区域仍早停, 不空跑)。
+  - 输出 `paths_only.mode` ('offset_only'/'stream') + `source_slice_file`。
+- **run_full_comparison.m**: `generate_offset_paths` 改为调用
+  `all_layers_path_generation_v6(slice, out, full, struct('offset_only', true))`,
+  不再调用 `path_generation_offset_only`。
+- **path_generation_offset_only.m**: 标记为已弃用 (保留作历史参考, 管线不再调用)。
+
+### 验证
+- 曲面切片最密两层 (#63/#66) 跑 offset_only: stream=0, 整块区域偏置环从边界填到中轴,
+  栅格化"沉积条带"(路径按线宽外扩) 占有效区域面积比 = **99.8%** (旧版覆盖不全)。出图确认
+  X 形结构被同心偏置环填满。
+
+### 注意 (速度/日志)
+- 不切区域时 generate_offset_path2 在复杂整块结构上较重: ~105 s/层 (max_iter=200, 填到
+  区域收缩才停), 且会打出大量"已捕获"的 polyshape 报错栈 (复杂几何深迭代所致, 不影响结果)。
+  这是"完全覆盖"的一次性代价。`opts.offset_max_iter` 可调上限。
+
+---
+
 ## 2026-06-04 — 修复 FEA 刚度提取 (K 混乱的根因)
 
 ### 背景 / 问题
