@@ -32,6 +32,13 @@ from abaqusConstants import *
 import os
 import sys
 
+# 'from abaqusConstants import *' shadows some Python builtins (notably 'sum')
+# with Abaqus symbolic constants. Under `abaqus python` that makes sum([...])
+# raise "illegal argument type for built-in operation". Restore the builtins we
+# use so this script is robust whether launched via `abaqus cae noGUI=...` or
+# `abaqus python ...`.
+from __builtin__ import sum, min, max, abs, float, sorted, len, range, zip
+
 
 # --- Must match abaqus_cfrc_compare.py Config ---
 BASE_DIR       = 'C:/temp/cfrc_fea'
@@ -204,6 +211,93 @@ def collect_from_field_output(step, target_labels):
     return time_vec, result
 
 
+def collect_loadpoint_from_cf(step):
+    """[ROBUST FALLBACK] Used when no 'LoadPoint' node set exists in the ODB.
+
+    The previous behavior fell back to averaging U over ALL nodes, which makes
+    u_loadpt ~ 0 (most of the structure barely moves) and inflates K by a factor
+    that scales with node count -> a meaningless, model-size-dependent K.
+
+    Instead: auto-detect the load patch = every node carrying a nonzero applied
+    concentrated force (CF). Then per frame return:
+        U1/U2/U3  = AVERAGE displacement over the patch (load-point motion)
+        CF1/CF2/CF3 = SUM of applied force over the patch (total applied load)
+    K = total_F / avg_u is the physical load-point stiffness, independent of how
+    many beams a config has. All values are coerced to plain Python float
+    (Abaqus value.data elements are not native floats -> '*'/abs would TypeError).
+
+    Returns (time_vec, {var: [...]}) with U1/U2/U3/CF1/CF2/CF3, or (None, {}).
+    """
+    frames = step.frames
+    if len(frames) == 0:
+        return None, {}, 0
+    last = frames[-1]
+    if 'CF' not in last.fieldOutputs.keys():
+        print '    [cf-autodetect] no CF field output; cannot locate load node'
+        return None, {}, 0
+
+    # Load patch = all (instance, label) nodes with a nonzero applied CF.
+    load_nodes = set()
+    max_mag = 0.0
+    for v in last.fieldOutputs['CF'].values:
+        d = v.data
+        if d is None:
+            continue
+        mag = 0.0
+        for c in d:
+            fc = float(c)
+            mag += fc * fc
+        mag = mag ** 0.5
+        if mag > 1e-6:
+            iname = v.instance.name if v.instance is not None else ''
+            load_nodes.add((iname, v.nodeLabel))
+            if mag > max_mag:
+                max_mag = mag
+
+    if not load_nodes:
+        print '    [cf-autodetect] CF field has no nonzero applied force'
+        return None, {}, 0
+    print '    [cf-autodetect] load patch: %d node(s) with applied CF (max |CF|=%.4e N)' % (
+        len(load_nodes), max_mag)
+
+    result = {}
+    time_vec = []
+    for fr in frames:
+        time_vec.append(fr.frameValue)
+        u_sum = [0.0, 0.0, 0.0]
+        u_cnt = 0
+        cf_sum = [0.0, 0.0, 0.0]
+        u_field = fr.fieldOutputs['U'] if 'U' in fr.fieldOutputs.keys() else None
+        cf_field = fr.fieldOutputs['CF'] if 'CF' in fr.fieldOutputs.keys() else None
+        if u_field is not None:
+            for v in u_field.values:
+                iname = v.instance.name if v.instance is not None else ''
+                if (iname, v.nodeLabel) in load_nodes:
+                    d = v.data
+                    if d is not None:
+                        for i in range(min(3, len(d))):
+                            u_sum[i] += float(d[i])
+                        u_cnt += 1
+        if cf_field is not None:
+            for v in cf_field.values:
+                iname = v.instance.name if v.instance is not None else ''
+                if (iname, v.nodeLabel) in load_nodes:
+                    d = v.data
+                    if d is not None:
+                        for i in range(min(3, len(d))):
+                            cf_sum[i] += float(d[i])
+        for i, suffix in enumerate(('1', '2', '3')):
+            uk = 'U' + suffix
+            ck = 'CF' + suffix
+            if uk not in result:
+                result[uk] = []
+            if ck not in result:
+                result[ck] = []
+            result[uk].append(u_sum[i] / u_cnt if u_cnt > 0 else 0.0)
+            result[ck].append(cf_sum[i])
+    return time_vec, result, len(load_nodes)
+
+
 def extract_one(odb_path, cfg_name):
     """Open ODB, extract F-U history and scalar metrics. Returns dict."""
     print '\n--- Extracting: %s ---' % cfg_name
@@ -277,11 +371,24 @@ def extract_one(odb_path, cfg_name):
             # STAGE 2: Field Output frame-by-frame
             # =================================================
             print '  [Stage 2] Trying Field Output (per-frame)...'
-            time_vec, vardict = collect_from_field_output(step, lp_labels)
+            if lp_labels:
+                # Named LoadPoint set exists -> restrict to its nodes (correct).
+                time_vec, vardict = collect_from_field_output(step, lp_labels)
+                src_label = 'field_set'
+            else:
+                # No LoadPoint set: DO NOT average over all nodes (that produced
+                # the meaningless, node-count-dependent K). Auto-detect the load
+                # node from the CF field instead.
+                print ('    [Stage 2] no "%s" set -> auto-detecting load node '
+                       'from CF field' % LOAD_POINT_SET)
+                time_vec, vardict, n_lp = collect_loadpoint_from_cf(step)
+                src_label = 'field_cf_autodetect'
+                if time_vec is not None and vardict:
+                    result['num_load_nodes'] = n_lp
             if time_vec is not None and vardict:
-                print '    [field] OK -- %d frames, vars=%s' % (
-                    len(time_vec), sorted(vardict.keys()))
-                used_source = 'field'
+                print '    [field] OK (%s) -- %d frames, vars=%s' % (
+                    src_label, len(time_vec), sorted(vardict.keys()))
+                used_source = src_label
             else:
                 print '    [field] also empty'
 

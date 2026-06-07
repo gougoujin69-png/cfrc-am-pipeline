@@ -12,8 +12,13 @@
 %   物理尺寸        = nelx × ELEM_SIZE                (mm)
 %   应力场采样点数   = nelx × REFINE_FACTOR             (个)
 %   细网格物理步长   = ELEM_SIZE / REFINE_FACTOR        (mm)
-%   切片层高        = SCALE_FACTOR (写入 refined_data, 被 slice_refined_model_v6 读取)
-%   线宽            = all_layers_path_generation_v6 的 params.offset_distance (物理 mm, 已天然解耦)
+%   切片层高        = SCALE_FACTOR (写入 refined_data, 被 slice_refined_model_v6 +
+%                    generate_planar_slicing 共同读取 -> 曲面/平面层高严格一致)
+%   线宽            = LINE_WIDTH (写入 refined_data.parameters.LINE_WIDTH, 经切片
+%                    盖章进 slice_results.parameters, 被 all_layers_path_generation_v6 +
+%                    path_generation_offset_only 读作 offset_distance.
+%                    [集中化] 这里是 4-way 对比线宽的唯一来源: 改这一个数,
+%                    mine_stream/mine_offset/planar_stream/planar_offset 全部联动.)
 %
 % 控制参数 (见 Step 3):
 %   ELEM_SIZE      : 体素物理边长(mm). 控制物理尺寸. 放大就调大.
@@ -21,6 +26,7 @@
 %   LAYER_HEIGHT_MODE + TARGET_LAYER_HEIGHT : 控制切片层高
 %       'bind'    : SCALE_FACTOR = ELEM_SIZE/REFINE_FACTOR (随放大变化, 旧行为)
 %       'decouple': SCALE_FACTOR = TARGET_LAYER_HEIGHT     (物理固定, 推荐)
+%   LINE_WIDTH     : 路径线宽/相邻偏置间距(mm). 4-way 对比的统一线宽来源.
 %%
 
 fprintf('\n');
@@ -93,6 +99,11 @@ ELEM_SIZE           = 2;        % 体素物理边长(mm). 放大就调大. 原�
 REFINE_FACTOR       = 2;          % 应力场采样加密倍数 (不影响物理尺寸)
 LAYER_HEIGHT_MODE   = 'decouple'; % 'bind' 或 'decouple'(推荐)
 TARGET_LAYER_HEIGHT = 0.25;        % mm, 仅 decouple 模式用
+% ============ 路径线宽 (4-way 对比的唯一来源) ============
+% [集中化] 写入 refined_data.parameters.LINE_WIDTH, 经切片盖章进 slice_results,
+%   被两个路径生成脚本读作 offset_distance. 改这一个数, 4 个对比配置全部联动,
+%   保证 run_full_comparison 在"完全相同线宽"下出结果.
+LINE_WIDTH          = 0.4;         % mm, 路径线宽 / 相邻偏置环间距
 % ==========================================
 
 INTERP_METHOD = 'linear';
@@ -118,6 +129,7 @@ fprintf('   应力场细网格步长    = %.4f mm\n', fine_step);
 fprintf('   层高模式            = %s\n', LAYER_HEIGHT_MODE);
 fprintf('   → 切片层高(SCALE_FACTOR) = %.4f mm\n', SCALE_FACTOR_OUT);
 fprintf('   (估计层数 ≈ 物理Z高度/层高 = %.0f)\n', phys_size_z / SCALE_FACTOR_OUT);
+fprintf('   线宽(LINE_WIDTH)    = %.4f mm  [4-way 对比统一线宽来源]\n', LINE_WIDTH);
 fprintf(' --------------------\n');
 fprintf(' Density threshold: %.2f\n', DENSITY_THRESHOLD);
 
@@ -274,6 +286,7 @@ refined_data.parameters = struct(...
     'ELEM_SIZE', ELEM_SIZE, ...
     'LAYER_HEIGHT_MODE', LAYER_HEIGHT_MODE, ...
     'TARGET_LAYER_HEIGHT', TARGET_LAYER_HEIGHT,...
+    'LINE_WIDTH', LINE_WIDTH, ...
     'angle_unit', 'degrees');
 refined_data.original_size = struct('nelx', nelx, 'nely', nely, 'nelz', nelz);
 refined_data.statistics = struct(...
