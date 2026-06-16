@@ -59,3 +59,23 @@ results/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# robot/print outputs (regenerable from scripts)
+*.mod
+*.xlsx
+*.xls
+*.stl
+*.zip
+*.inp
+trajectory_data.mat
+# backups & bundled data
+_backup_*/
+**/_backup_*/
+mnt/
+**/FJZV16_streamline/
+# scratch / agent test files
+zz_*
+_verify_*
+_diag*
+**/zz_*
+**/_verify_*
