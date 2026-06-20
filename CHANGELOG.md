@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-06-20 — 仓库重构: App 模式 + 分层目录 + cwd/路径修复
+
+### 背景
+研究管线已稳定跑通一遍。把本地新增的图形控制台 (CFRC_App) 与「脚本各归其位」的分层
+目录一并上传, 让以后 clone 下来可任选 **App 模式** 或 **平铺脚本模式**。
+
+### 改动
+- **目录重构**: 原扁平结构 (所有 .m/.py 在根) → `scripts/ functions/ viz/ python/ CFRC_App/`。
+  脚本仍按文件名调用 (都在 MATLAB 路径上), 所以 README 的逐文件索引保持有效。
+- **新增 `cfrc_setup.m`**: 两种模式共用的路径 bootstrap (加路径 + 建 data/ output/)。
+- **新增 `CFRC_App/`**: 16 阶段图形控制台 (`launch_CFRC` → `CFRC_Pipeline_App`), 状态灯 +
+  自动串联 + 单阶段运行; `app_helpers/cfrc_layout.m` 单点定义目录布局。
+- **修复 verify_outputs.m (⑪)**: App 经 `run(<scripts 全路径>)` 跑脚本时 MATLAB 会 cd 进
+  scripts/, 裸文件名 `exist/load` 落到 scripts/ → 误报 4 组产物全 MISSING。改为用 `mfilename`
+  自定位 DATA_DIR (与 `generate_reference_surface.m` 同款约定)。
+- **FEA 目录统一为 `C:\temp\cfrc_fea`**: `cfrc_layout` 的 `L.fea` 从项目内 `output/fea` (含中文,
+  Abaqus PY2.7 不支持) 改为 ASCII 临时路径, 与 `abaqus_cfrc_compare.py` / `run_compare.m` /
+  `run_full_comparison.m` 一致; 导出阶段 (⑫) 顺带把 5 个 helper 脚本复制过去。
+- **修复 ⑫ 状态灯**: 引入 `indir`, 让「输入在 data/、输出在 fea/」的导出阶段不再误显 blocked。
+- **run_compare.m 脚本目录**: 不再写死旧项目 `四维降维/...`, 改用 `cfrc_layout()` 自动定位本
+  项目 `scripts/functions/viz` (脱离 App 时回退 `PROJECT_ROOT_FALLBACK`)。
+
+---
+
 ## 2026-06-04 — 纯偏置改用 v6 偏置机制 (offset_only 模式), 修复覆盖不全
 
 ### 背景 / 问题

@@ -92,35 +92,96 @@
 
 ---
 
-## 3. 快速上手（30 分钟跑通最小用例）
+## 3. 安装、目录结构与两种运行模式
 
-### 3.1 环境
+### 3.1 运行环境
 
 | 环节 | 软件 | 说明 |
 |---|---|---|
-| 体素化 | **Python 3** + `trimesh` `scipy` `numpy` `h5py`(可选) `manifold3d` | 仅用于 `voxelize.py` |
-| 应力分析 | **Abaqus 2021**（Python 2.7 kernel） | 必须！本仓库所有 Abaqus 脚本都遵循 PY2 语法约束 |
-| 切片 / 路径 / 后处理 | **MATLAB** R2021+ | 全部 `.m` 脚本 |
+| 体素化 | **Python 3** + `trimesh` `scipy` `numpy` `manifold3d`（`h5py` 可选） | 仅 `voxelize.py` 用 |
+| 应力分析 / FEA 对比 | **Abaqus 2021**（自带 Python 2.7 kernel） | 所有 Abaqus 脚本遵循 PY2.7 语法；`abaqus` 需在系统 PATH |
+| 切片 / 路径 / 后处理 / App | **MATLAB R2020a+** | App 用到 `uifigure` / `uigridlayout` / `scroll` |
 
-### 3.2 最小流程
+### 3.2 克隆与初始化（两种模式共用）
 
-```bash
-# 1. 体素化 STL（或 SIMP 拓扑结果）
-python3 voxelize.py from-stl part.stl -s 1.0
-
-# 2. 在 Abaqus/CAE 里 Import voxel_grid.inp，加 BC/Load/Step，跑 job → job.odb
-
-# 3. 回收应力到 .mat
-abaqus python abaqus_odb_to_mat.py --odb job.odb --npz voxel_grid.npz \
-    --output topo_stress_result.mat
-
-# 4. MATLAB 里跑切片+路径+FEA 对比
-matlab -batch "voxel_refinement_from_test; generate_reference_surface; \
-               slice_refined_model_v6; all_layers_path_generation_v6; \
-               run_full_comparison"
+```matlab
+% clone 后, 在 MATLAB 里 cd 到仓库根目录, 跑一次 bootstrap:
+>> cd <repo-root>
+>> cfrc_setup        % 把 scripts/ functions/ viz/ python/ CFRC_App/ 加进路径, 并创建 data/ output/
 ```
 
-详细工作流见 `docs/01_前处理与体素化.md` 与 `docs/02_切片路径与FEA对比.md`。
+`cfrc_setup` 跑完后任选下面 **模式 A / 模式 B**。
+> 数据**不在仓库里**（`.gitignore` 排除了所有 `.mat/.odb/.png/.csv`）。把输入（STL 或体素 `.mat`）
+> 放进 `data/`，或从阶段 A 体素化开始生成。
+
+### 3.3 目录结构
+
+```
+<repo-root>/
+├── cfrc_setup.m         ← 两种模式共用的路径 bootstrap（先跑这个）
+├── CFRC_App/            ← App 模式本体
+│   ├── launch_CFRC.m            启动器（设路径 + 切到 data/ + 开窗）
+│   ├── CFRC_Pipeline_App.m      控制台主体（uifigure, 16 阶段）
+│   ├── app_helpers/cfrc_layout.m  唯一定义文件夹布局的地方
+│   └── README_APP.md            App 详细说明
+├── scripts/             ← 流程「阶段」入口脚本/函数（切片 / 路径 / 对比 / 主驱动）
+├── functions/           ← 被阶段调用的辅助函数
+├── viz/                 ← 可视化脚本
+├── python/              ← voxelize.py / abaqus_*.py / extract_fea_results.py
+├── docs/                ← 深入文档 01 / 02 / 03
+├── data/      (gitignore)  所有 .mat 数据；脚本模式下作为工作目录 cwd
+└── output/    (gitignore)  figures / logs
+```
+> **Abaqus 工作目录不在仓库树内**：固定为 `C:\temp\cfrc_fea`（短 ASCII 路径）。Abaqus 自带的
+> Python 2.7 无法处理含中文/非 ASCII 的项目路径，所以所有 Abaqus 脚本（`abaqus_cfrc_compare.py`
+> 的 `Config.BASE_DIR` 等）都按这个路径写死；导出阶段会自动把 4 组路径 + helper 脚本复制过去。
+
+### 3.4 模式 A — App（图形控制台，推荐）
+
+```matlab
+>> launch_CFRC          % 内部也会设好路径并切到 data/, 直接开窗即可
+```
+
+打开一个把全 **16 个阶段**串起来的控制台：每阶段一键运行、状态灯（灰=缺输入 / 橙=可运行 /
+绿=完成 / 黄=需重跑 / 红=出错 / 紫=Abaqus 手动）、顶部「下一步 ▸」提示、「▶ 自动串联」连续跑到
+遇 Abaqus 手动步骤为止。阶段 ②⑬⑭ 的 Abaqus 命令会列在该阶段详情里。完整说明见
+[`CFRC_App/README_APP.md`](CFRC_App/README_APP.md)。
+
+### 3.5 模式 B — 平铺脚本（命令行 / 批处理）
+
+不开窗，直接按名字调用各阶段（`cfrc_setup` 已把它们都加进路径，**按文件名调用、与所在文件夹无关**）。
+FEA 对比用主驱动 `run_full_comparison`（10 个 stage，skip-if-exists）：
+
+```matlab
+>> cfrc_setup
+>> cd data                                   % 阶段脚本用裸文件名读写, cwd 要在 data/
+>> run_full_comparison                        % 检测已有产物, 只补缺的 stage
+>> run_full_comparison('force', true)         % 强制全部重跑
+>> run_full_comparison('stages', [7 8 9])     % 只跑指定 stage
+```
+
+也可逐阶段手动跑（最小链路）：
+
+```bash
+# 阶段 A: 体素化 STL（或 SIMP 拓扑 .mat）, 产物落在 data/
+python3 python/voxelize.py from-stl part.stl -s 1.0
+# 阶段 B: Abaqus 里 Import voxel_grid.inp, 加 BC/Load/Step, 跑 job → job.odb, 再回收应力:
+abaqus python python/abaqus_odb_to_mat.py --odb job.odb --npz voxel_grid.npz \
+    --output topo_stress_result.mat
+```
+```matlab
+% 阶段 C/D（MATLAB, cwd = data/）:
+>> voxel_refinement_from_test
+>> generate_reference_surface
+>> slice_refined_model_v6('voxel_refined_latest.mat','slice_results_refined_latest.mat')
+>> all_layers_path_generation_v6('slice_results_refined_latest.mat', ...
+       'all_layers_paths_only_v3.mat','all_layers_paths_only_v3_full.mat')
+% 阶段 E: run_full_comparison（导出 + Abaqus 4-way + 对比, 见上）
+```
+
+> 两种模式跑的是**同一套**代码与产物，可混用（App 跑前处理、切脚本批处理跑对比都行）。
+> 详细工作流见 [`docs/01_前处理与体素化.md`](docs/01_前处理与体素化.md) 与
+> [`docs/02_切片路径与FEA对比.md`](docs/02_切片路径与FEA对比.md)。
 
 ---
 

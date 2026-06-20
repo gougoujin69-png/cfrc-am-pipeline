@@ -59,3 +59,14 @@ results/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 数据 / 输出目录 (不随仓库走; cfrc_setup 会按需创建)
+data/
+output/
+
+# 本地工作区 / 备份 / 克隆 (不上传)
+_backup_*/
+_gh_repo/
+.claude/
+stitch_prompt.md
+cfrc_run_*.m
