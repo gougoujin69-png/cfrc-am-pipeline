@@ -96,10 +96,35 @@ class Config:
     BEAM_MAJOR_AXIS = 0.6
     BEAM_MINOR_AXIS = 0.15
 
-    HOST_E = 2500.0
-    HOST_NU = 0.38
+    # ------------------------------------------------------------------
+    # Materials calibrated to MEASURED 3D-printed CFRC properties
+    # (thesis Table 3.1: E11=42360.2, E22=2012.9, E33=2146.1,
+    #  G12=698.2, G13=758.4, G23=658.1 MPa; nu23=0.39).
+    #
+    # Embedded elements SUPERPOSE stiffness (host is not removed where
+    # beams exist), so for one printed path representing a material
+    # cross-section A_cell = line_width * layer_height:
+    #     E11 * A_cell = HOST_E * A_cell + E_beam * A_beam
+    #
+    # Print geometry: line width w = 0.8 mm, layer height t = 0.25 mm
+    #     A_cell = 0.200000 mm^2
+    # Beam ellipse 0.6 x 0.15 mm:
+    #     A_beam = pi*0.3*0.075 = 0.070686 mm^2
+    #
+    # HOST_E  = E22 (matrix/interface dominated; beams add nothing
+    #           transversely). HOST_NU = nu23; implied isotropic
+    #           G = 724.1 MPa, inside measured band 658.1..758.4 MPa.
+    # E_beam  = (E11 - HOST_E) * A_cell / A_beam = 114159.5 MPa
+    # BEAM_E_RATIO = E_beam / HOST_E = 56.714
+    #
+    # Regenerate after any change of w/t/profile/table with:
+    #     python embedded_material_calculator.py -w 0.8 -t 0.25
+    # (see docs/embedded_material_calculator_usage.md)
+    # ------------------------------------------------------------------
+    HOST_E = 2012.9
+    HOST_NU = 0.39
     HOST_DENSITY = 1.14e-9
-    BEAM_E_RATIO = 92.0
+    BEAM_E_RATIO = 56.714
 
     # Beam element resampling:
     # If a path has many points (hundreds), the B31 mesh density will be high

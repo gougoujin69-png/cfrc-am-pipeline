@@ -282,6 +282,7 @@ abaqus python python/abaqus_odb_to_mat.py --odb job.odb --npz voxel_grid.npz \
 | `run_compare.m` | `compare_fea_results` 的 launcher |
 | `diagnose_loadpoint.py` | 加载点诊断（写文件版本） |
 | **`compute_path_statistics.m`** | **路径几何统计**（长度 / 平滑段 / 应力对齐度，含 50% 阴影与截断 violin） |
+| `embedded_material_calculator.py` | 打印几何(w/t) + 实测表 3.1 → `HOST_E/HOST_NU/BEAM_E_RATIO` 嵌入单元材料参数（Py2.7/3；标定 `abaqus_cfrc_compare.py` 的 `Config`，见 `docs/embedded_material_calculator_usage.md`） |
 
 详见 [`docs/02_切片路径与FEA对比.md`](docs/02_切片路径与FEA对比.md)。
 
@@ -350,12 +351,15 @@ w = +sin(t_xoz)                ← 注意是 +，不是 −
 ### 5.4 单元类型
 
 - Abaqus 母体网格：`C3D8R`（缩减积分六面体，避免 volumetric locking）
-- 嵌入纤维梁：`B31`（一阶 Timoshenko 梁），椭圆截面 0.6 × 0.15 mm，E_ratio = 92×
+- 嵌入纤维梁：`B31`（一阶 Timoshenko 梁），椭圆截面 0.6 × 0.15 mm，`BEAM_E_RATIO = 56.714`（HOST_E=2012.9 MPa, HOST_NU=0.39，标定自实测 CFRC 表 3.1；见 `docs/embedded_material_calculator_usage.md`）
 - 嵌入容差：`absoluteTolerance = 2.5 mm`，方向 n1 = (0.309, 0.619, 0.722)
 
 ---
 
 ## 6. 已知 K 实验结果
+
+> ⚠️ 本表是用**标定前的占位材料**（HOST_E=2500 MPa、BEAM_E_RATIO=92）跑出的历史结果。
+> 材料体系已标定到实测 CFRC（见 §5.4 与 CHANGELOG），需用新参数重跑 Abaqus 4-way 后更新本表。
 
 | Config | K (N/mm) | vs Planar+Offset 基线 |
 |---|---|---|
@@ -400,3 +404,4 @@ w = +sin(t_xoz)                ← 注意是 +，不是 −
 - [`docs/01_前处理与体素化.md`](docs/01_前处理与体素化.md) —— 阶段 A/B 深入：`voxelize.py` CLI、9 种轴旋转、STL vs Topo 模式语义、`abaqus_odb_to_mat.py` 输出字段定义、常见坑 Q1–Q8
 - [`docs/02_切片路径与FEA对比.md`](docs/02_切片路径与FEA对比.md) —— 阶段 C/D/E 深入：`run_full_comparison` 10 stage、Abaqus 自动重试 / blacklist 机制、`*Cload` 逐节点语义、`voxel_refined_latest.mat` 数据结构、4 张路径统计图的物理含义
 - [`docs/03_管线修复链_REFINE3启用.md`](docs/03_管线修复链_REFINE3启用.md) —— 启用 `REFINE_FACTOR=3` 后整条 `run_full_comparison` 管线 10 个相关问题的完整 root-cause 与修复链：从 Stage 2 函数名找不到 → MATLAB 脚本 function 化 → SKIP sentinel 双端对齐 → host cell 尺寸双端修复 → path X 方向 scale 误用（含数据流约定图与验证流程）
+- [`docs/embedded_material_calculator_usage.md`](docs/embedded_material_calculator_usage.md) —— 嵌入单元材料参数标定：把打印几何(线宽 w / 层高 t) + 实测 CFRC 表 3.1 换算为 `HOST_E/HOST_NU/BEAM_E_RATIO`（刚度叠加标定方程、G 带自检、三种梁等效约定），配套 `embedded_material_calculator.py`

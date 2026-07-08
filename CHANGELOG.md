@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-07-08 — 材料体系标定: 嵌入单元参数改用实测 CFRC (表 3.1)
+
+### 背景
+之前 `abaqus_cfrc_compare.py` 的 `Config` 用的是占位材料 (HOST_E=2500, HOST_NU=0.38,
+BEAM_E_RATIO=92), 与实测的 3D 打印 CFRC 性能无关。现按论文表 3.1 的实测各向异性模量,
+标定嵌入单元 (各向同性 host 实体 + 嵌入 B31 梁) 的等效参数。
+
+### 原理
+Abaqus embedded element 是刚度**叠加**式 (梁位置 host 不被扣除)。沿纤维方向, 对一条打印
+道次代表的截面 A_cell = 线宽 w × 层高 t:
+    E11 × A_cell = HOST_E × A_cell + E_beam × A_beam
+host 独立复现横向/剪切 (E22/E33 + 三个 G), 故取 HOST_E=E22、HOST_NU=ν23。
+
+### 改动
+- **abaqus_cfrc_compare.py (Config)**: HOST_E 2500→2012.9 (=E22), HOST_NU 0.38→0.39 (=ν23),
+  BEAM_E_RATIO 92→56.714 (E_beam=114159.5 MPa)。基于 w=0.8 / t=0.25 打印几何、梁椭圆
+  0.6×0.15。HOST_DENSITY 不变。自检: 重构 E11=42360.2 与实测一致; 隐含各向同性 G=724.1
+  MPa 落在实测 658.1~758.4 内; 反演 Vf≈17.7%。
+- **新增 embedded_material_calculator.py** (仓库根): 由 w/t + 表 3.1 换算并打印可直接粘贴进
+  `Config` 的三个数, 带 G 带自检与 ellipse/cell/fiber 三种梁等效约定。Py2.7/3、纯 ASCII。
+- **新增 docs/embedded_material_calculator_usage.md**: 原理、用法、参数、四条注意事项
+  (A_cell 必须与实际导入 FEA 的路径间距一致; ν12 失配可接受; 密度未改; 建议单向标定试件
+  闭环验证)。
+- **README**: §5.4 材料参数更新; §6 K 结果表加「标定前占位材料」提示 (需用新参数重跑);
+  §4.5 / §9 收录计算器与用法文档。
+
+### 影响
+静刚度 K 的绝对值会变化 (需重跑 Abaqus 4-way 更新 §6 表)。`BEAM_MAX_SEGMENTS` / n1 /
+`BASE_DIR` 等其它 Config 不变。
+
+---
+
 ## 2026-06-20 — 仓库重构: App 模式 + 分层目录 + cwd/路径修复
 
 ### 背景
