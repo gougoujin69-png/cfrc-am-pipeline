@@ -648,20 +648,21 @@ def _write_beam_inp(inp_path, beam_paths_resampled, orig_path_indices=None):
         'orig_path_indices length must match beam_paths_resampled'
 
     node_lines = []
-    elem_b31_lines = []  # B31 elements
-    elset_per_path_lines = []  # separate *Elset blocks per path
-    spring_elements = []  # SPRING1 rows (eid, nid)
-    spring_elsets = {4: [], 5: [], 6: []}  # dof -> list of eids
+    elem_b31_lines = []         # B31 elements
+    elset_per_path_lines = []   # separate *Elset blocks per path
+    spring_elements = []        # SPRING1 rows (eid, nid)
+    spring_elsets = { 4: [], 5: [], 6: [] }  # dof -> list of eids
 
     # Pass 1: collect all nodes/elements per path
-    paths_data = []  # list of (orig_path_idx, pts, path_node_ids_tmp, path_elems, used_local)
+    paths_data = []   # list of (orig_path_idx, pts, path_node_ids_tmp, path_elems, used_local)
     next_node_id = 1
     next_elem_id = 1
 
     n_paths = 0
     n_zero_seg_skipped = 0
+    n_selfclose_trunc = 0
     for path_idx, pts in enumerate(beam_paths_resampled):
-        orig_idx = orig_path_indices[path_idx]  # 1-based ORIGINAL path index
+        orig_idx = orig_path_indices[path_idx]   # 1-based ORIGINAL path index
         if len(pts) < 2:
             continue
 
@@ -676,36 +677,46 @@ def _write_beam_inp(inp_path, beam_paths_resampled, orig_path_indices=None):
         # 如果 beam 切线向量与 Config.BEAM_N1 近似平行, Abaqus 会报
         # "beam direction vectors coincide" -> 伪装的 "zero length" 错误. 过滤这些.
         path_elems = []  # list of (n1_local_idx, n2_local_idx)
-        MIN_SEG_LEN_SQ = 0.01  # (0.1 mm)^2 = 0.01 mm^2
+        MIN_SEG_LEN_SQ = 0.04  # (0.2 mm)^2 -- raised from 0.1mm: Abaqus treats short 3D beam segs (0.12-0.15mm w/ z-jog) as zero-length
         # n1 方向 (与 assignBeamSectionOrientation 必须一致, 用 Config 单一真实源)
         import math as _m
         _nx0, _ny0, _nz0 = Config.BEAM_N1_RAW
-        _norm0 = _m.sqrt(_nx0 * _nx0 + _ny0 * _ny0 + _nz0 * _nz0)
-        N1_VEC = (_nx0 / _norm0, _ny0 / _norm0, _nz0 / _norm0)
+        _norm0 = _m.sqrt(_nx0*_nx0 + _ny0*_ny0 + _nz0*_nz0)
+        N1_VEC = (_nx0/_norm0, _ny0/_norm0, _nz0/_norm0)
         # 切线和 n1 的夹角余弦绝对值 > MAX_COSINE 则剔除 (1.0 = parallel)
         MAX_PARALLEL_COSINE = getattr(Config, 'BEAM_N1_PARALLEL_COSINE', 0.99)
         last_kept_idx = 0
+        kept_coords = [pts[0]]            # 本 path 已保留点, 用于自相交/闭环检测
+        SELF_TOL_SQ = 2.5e-5             # (5e-3 mm)^2: 判定"重访"同一物理点
         for i in range(1, len(pts)):
-            p1 = pts[last_kept_idx];
-            p2 = pts[i]
-            dx = p2[0] - p1[0];
-            dy = p2[1] - p1[1];
-            dz = p2[2] - p1[2]
-            seg_len_sq = dx * dx + dy * dy + dz * dz
+            p1 = pts[last_kept_idx]; p2 = pts[i]
+            dx = p2[0] - p1[0]; dy = p2[1] - p1[1]; dz = p2[2] - p1[2]
+            seg_len_sq = dx*dx + dy*dy + dz*dz
             if seg_len_sq < MIN_SEG_LEN_SQ:
                 n_zero_seg_skipped += 1
                 continue
+            # 若 p2 与本 path 之前已保留的某点重合 (闭环流线首尾重合 / 自相交),
+            # 在此截断该 path. 否则会写出两个坐标完全相同的独立节点, Abaqus
+            # 装配时把它们合并 -> 退化 B31 接头 (zero-length / normal-cannot-
+            # compute / direction-vectors-coincide). offset 同心环因不重复端点故无此问题.
+            _revisit = False
+            for _pk in kept_coords:
+                _rx = p2[0]-_pk[0]; _ry = p2[1]-_pk[1]; _rz = p2[2]-_pk[2]
+                if _rx*_rx + _ry*_ry + _rz*_rz < SELF_TOL_SQ:
+                    _revisit = True; break
+            if _revisit:
+                n_selfclose_trunc += 1
+                break
             # 检查切线和 n1 的平行度
             L = seg_len_sq ** 0.5
-            tx = dx / L;
-            ty = dy / L;
-            tz = dz / L
+            tx = dx / L; ty = dy / L; tz = dz / L
             cosine = abs(tx * N1_VEC[0] + ty * N1_VEC[1] + tz * N1_VEC[2])
             if cosine > MAX_PARALLEL_COSINE:
                 n_zero_seg_skipped += 1  # 复用计数器
                 continue
             path_elems.append((last_kept_idx, i))
             last_kept_idx = i
+            kept_coords.append(p2)
 
         if not path_elems:
             # whole path dropped (all segments zero length)
@@ -715,12 +726,15 @@ def _write_beam_inp(inp_path, beam_paths_resampled, orig_path_indices=None):
         # Collect used local node indices
         used_local = set()
         for (a, b) in path_elems:
-            used_local.add(a);
-            used_local.add(b)
+            used_local.add(a); used_local.add(b)
 
         n_paths += 1
         # paths_data tuple: (orig_idx_1based, pts, tmp_ids, elems, used)
         paths_data.append((orig_idx, pts, path_node_ids_tmp, path_elems, used_local))
+
+    if n_selfclose_trunc:
+        print '    [fix] truncated %d self-closing/self-touching paths ' \
+              '(dropped coincident closing points -> no degenerate junctions)' % n_selfclose_trunc
 
     # Pass 2: 节点编号
     # 关键策略: path 之间的节点完全独立 (各用自己的 id), 并对每条 path 的坐标施加
@@ -731,13 +745,24 @@ def _write_beam_inp(inp_path, beam_paths_resampled, orig_path_indices=None):
     final_node_id = 1
     PERTURB_SCALE = 1e-5  # 10 nm per path index
 
-    # Optional out-of-plane ripple (see Config.BREAK_PLANAR_EPS). 0 -> off.
-    # When on, adds a tiny smooth wobble that VARIES along each path so the
-    # path is no longer exactly coplanar -- this is the only thing that changes
-    # for planar_stream, and it targets Abaqus's planar B31 normal edge case.
-    # Unlike PERTURB (a per-path RIGID shift, preserves planarity), this varies
-    # per node index so it actually breaks coplanarity. Amplitude is microns.
-    break_eps = getattr(Config, 'BREAK_PLANAR_EPS', 0.0)
+    # 全局防合并: 记录已放置节点的空间哈希. 若某节点与任意已放置节点 (含其他
+    # path, 如两条流线交叉穿过同一物理点) 距离 < NUDGE_CELL, 就沿固定方向微移
+    # 直到不再重合. 只影响极少数交叉重合点, 位移量级 << beam 截面, 对刚度无影响.
+    # 保证全局无坐标重合节点 -> Abaqus 装配无可合并目标 -> 不产生退化 B31 接头.
+    occupied = {}
+    NUDGE_CELL = 0.02          # mm: 重合判定分辨率 (>> 0.8mm 路径间距, << 段长)
+    NUDGE_CELL_SQ = NUDGE_CELL * NUDGE_CELL
+    n_cross_nudged = 0
+
+    def _collides(px, py, pz):
+        cx = int(round(px / NUDGE_CELL)); cy = int(round(py / NUDGE_CELL)); cz = int(round(pz / NUDGE_CELL))
+        for ax in (-1, 0, 1):
+            for ay in (-1, 0, 1):
+                for az in (-1, 0, 1):
+                    for (ox, oy, oz) in occupied.get((cx+ax, cy+ay, cz+az), ()):
+                        if (ox-px)*(ox-px) + (oy-py)*(oy-py) + (oz-pz)*(oz-pz) < NUDGE_CELL_SQ:
+                            return True
+        return False
 
     for pdi, (orig_idx, pts, tmp_ids, elems, used) in enumerate(paths_data):
         # 每条 path 独立扰动 (prime 乘积让扰动各向异性, 避免偶然共线)
@@ -745,24 +770,32 @@ def _write_beam_inp(inp_path, beam_paths_resampled, orig_path_indices=None):
         perturb_x = PERTURB_SCALE * pdi * 1.3
         perturb_y = PERTURB_SCALE * pdi * 1.7
         perturb_z = PERTURB_SCALE * pdi * 1.9
-        phase = 0.7 * pdi  # per-path phase so paths don't share a ripple
         for li in sorted(used):
             (x, y, z) = pts[li]
             # 施加扰动
             x2 = x + perturb_x
             y2 = y + perturb_y
             z2 = z + perturb_z
-            if break_eps > 0.0:
-                z2 += break_eps * math.sin(0.9 * li + phase)
-                x2 += 0.5 * break_eps * math.sin(0.6 * li + phase)
+            # 全局防合并微移 (仅极少数交叉重合点触发)
+            _k = 0
+            while _collides(x2, y2, z2) and _k < 60:
+                _k += 1
+                x2 = x + perturb_x + _k * 0.050
+                y2 = y + perturb_y + _k * 0.035
+                z2 = z + perturb_z + _k * 0.065
+            if _k > 0:
+                n_cross_nudged += 1
+            _ck = (int(round(x2 / NUDGE_CELL)), int(round(y2 / NUDGE_CELL)), int(round(z2 / NUDGE_CELL)))
+            occupied.setdefault(_ck, []).append((x2, y2, z2))
             nid = final_node_id
             final_node_id += 1
             node_id_map[(pdi, li)] = nid
             node_lines.append('%d, %.6f, %.6f, %.6f' % (nid, x2, y2, z2))
 
     total_nodes = final_node_id - 1
-    print
-    '    [Pass 2] independent nodes per path, +micro-perturbation to avoid merging'
+    if n_cross_nudged:
+        print '    [fix] nudged %d cross-path coincident nodes (crossing streamlines)' % n_cross_nudged
+    print '    [Pass 2] independent nodes per path, +micro-perturbation to avoid merging'
 
     # Pass 3: write elements with compact node ids, build elsets, collect spring endpoints
     final_elem_id = 1
@@ -1948,9 +1981,13 @@ def _parse_dat_errors(dat_path):
 
 
 def _parse_inp_path_info(inp_path):
-    """从 Job inp 提取 (path_ranges, node_to_paths).
-    path_ranges: {inp_path_id: (lo_eid, hi_eid)}
-    node_to_paths: {node_id: set(inp_path_id)}  -- AllBeams part 内
+    """从 Job inp 提取 (elem_to_pid, node_to_paths).
+    elem_to_pid:   {element_id: inp_path_id}  -- 精确映射, 覆盖 generate 与显式列表两种 elset
+    node_to_paths: {node_id: set(inp_path_id)}
+    v15 fix: 旧版只解析 generate 格式的 BEAMPATH elset. 但被过滤/合并后元素号不连续的
+      path 会写成显式列表 (*Elset, elset=BEAMPATH_NNNN 无 generate), 这些 path 对
+      auto_diagnose 完全不可见 -> 报错单元映射不到 -> 永远拉黑不到 -> 打地鼠不收敛
+      (0.8mm planar_stream 卡在最后 1-3 个单元的真凶). 现在两种格式都解析.
     """
     import re as _re
     if not os.path.exists(inp_path):
@@ -1960,35 +1997,7 @@ def _parse_inp_path_info(inp_path):
     text = raw.decode('latin-1', 'replace')
     lines = text.split('\n')
 
-    # 1) path_ranges (从 Assembly-level *Elset, generate=BEAMPATH_NNNN)
-    ranges = {}
-    current_pid = None;
-    in_gen = False
-    for line in lines:
-        ln = line.strip()
-        if ln.lower().startswith('*elset'):
-            m = _re.match(r'\*Elset,\s+elset=(?:assembly_)?(?:allbeams-1_)?BEAMPATH_(\d+),?\s*(generate)?',
-                          ln, _re.IGNORECASE)
-            if m:
-                current_pid = int(m.group(1))
-                in_gen = 'generate' in ln.lower()
-                continue
-            current_pid = None;
-            continue
-        elif ln.startswith('*'):
-            current_pid = None;
-            continue
-        if current_pid is not None and in_gen:
-            parts = [x.strip() for x in ln.split(',')]
-            if len(parts) >= 3:
-                try:
-                    lo, hi = int(parts[0]), int(parts[1])
-                    if current_pid not in ranges:
-                        ranges[current_pid] = (lo, hi)
-                except:
-                    pass
-
-    # 2) AllBeams part 里的 B31 element node 引用
+    # 1) AllBeams part 里的 B31 element node 引用
     elems = {}
     in_part_allbeams = False
     in_b31 = False
@@ -1997,12 +2006,9 @@ def _parse_inp_path_info(inp_path):
         low = ln.lower()
         if low.startswith('*part'):
             in_part_allbeams = ('name=allbeams' in low)
-            in_b31 = False;
-            continue
+            in_b31 = False; continue
         if low.startswith('*end part'):
-            in_part_allbeams = False;
-            in_b31 = False;
-            continue
+            in_part_allbeams = False; in_b31 = False; continue
         if not in_part_allbeams: continue
         if ln.startswith('*'):
             in_b31 = low.startswith('*element, type=b31')
@@ -2012,18 +2018,45 @@ def _parse_inp_path_info(inp_path):
             if len(parts) >= 3:
                 try:
                     elems[int(parts[0])] = (int(parts[1]), int(parts[2]))
-                except:
-                    pass
+                except: pass
 
-    # 3) 反向 mapping node -> path
+    # 2) element -> path id, 解析 generate 与显式列表两种 BEAMPATH elset
+    elem_to_pid = {}
+    current_pid = None; in_gen = False
+    for line in lines:
+        ln = line.strip()
+        if ln.lower().startswith('*elset'):
+            m = _re.match(r'\*Elset,\s+elset=(?:assembly_)?(?:allbeams-1_)?BEAMPATH_(\d+),?\s*(generate)?',
+                          ln, _re.IGNORECASE)
+            if m:
+                current_pid = int(m.group(1))
+                in_gen = 'generate' in ln.lower()
+                continue
+            current_pid = None; continue
+        elif ln.startswith('*'):
+            current_pid = None; continue
+        if current_pid is not None:
+            parts = [x.strip() for x in ln.split(',') if x.strip() != '']
+            try:
+                ids = [int(x) for x in parts]
+            except:
+                continue
+            if in_gen and len(ids) >= 2:
+                step = ids[2] if len(ids) >= 3 else 1
+                for eid in range(ids[0], ids[1] + 1, step):
+                    elem_to_pid[eid] = current_pid
+            else:
+                for eid in ids:
+                    elem_to_pid[eid] = current_pid
+
+    # 3) 反向 mapping node -> path (基于精确 elem_to_pid)
     node_to_paths = {}
-    for pid, (lo, hi) in ranges.items():
-        for eid in range(lo, hi + 1):
-            if eid in elems:
-                n1, n2 = elems[eid]
-                node_to_paths.setdefault(n1, set()).add(pid)
-                node_to_paths.setdefault(n2, set()).add(pid)
-    return ranges, node_to_paths
+    for eid, pid in elem_to_pid.items():
+        if eid in elems:
+            n1, n2 = elems[eid]
+            node_to_paths.setdefault(n1, set()).add(pid)
+            node_to_paths.setdefault(n2, set()).add(pid)
+    return elem_to_pid, node_to_paths
 
 
 def _map_inp_pid_to_orig(inp_pid, current_blacklist):
@@ -2038,12 +2071,12 @@ def _find_job_files(cfg_name, base_dir=None):
     candidates = []
     cwd = os.getcwd()
     candidates.append(cwd)
-
+    
     # 用户在 Config 里指定的额外搜索路径
     extra = getattr(Config, 'JOB_OUTPUT_DIRS', [])
     if extra:
         candidates.extend(extra)
-
+    
     if base_dir:
         candidates.append(base_dir)
         candidates.append(os.path.join(base_dir, 'jobs'))
@@ -2052,12 +2085,11 @@ def _find_job_files(cfg_name, base_dir=None):
                 p = os.path.join(base_dir, n)
                 if os.path.isdir(p):
                     candidates.append(p)
-        except:
-            pass
-
+        except: pass
+    
     dat_target = 'Job_%s.dat' % cfg_name
     inp_target = 'Job_%s.inp' % cfg_name
-
+    
     found_dat = None
     found_inp = None
     for d in candidates:
@@ -2076,64 +2108,51 @@ def auto_diagnose(cfg_name, base_dir=None):
     """读 dat+inp, 算出新需要加入 blacklist 的原始 path_idx 列表."""
     if base_dir is None:
         base_dir = Config.BASE_DIR
-
+    
     dat_path, inp_path = _find_job_files(cfg_name, base_dir)
-
-    print
-    '\n[auto_diagnose] %s' % cfg_name
-    print
-    '  dat: %s' % (dat_path if dat_path else '(NOT FOUND)')
-    print
-    '  inp: %s' % (inp_path if inp_path else '(NOT FOUND)')
-    print
-    '  cwd: %s' % os.getcwd()
+    
+    print '\n[auto_diagnose] %s' % cfg_name
+    print '  dat: %s' % (dat_path if dat_path else '(NOT FOUND)')
+    print '  inp: %s' % (inp_path if inp_path else '(NOT FOUND)')
+    print '  cwd: %s' % os.getcwd()
 
     if not dat_path or not inp_path:
         # 列出可能的位置, 帮助调试
-        print
-        '  Searched in:'
+        print '  Searched in:'
         cwd = os.getcwd()
-        print
-        '    cwd: %s' % cwd
+        print '    cwd: %s' % cwd
         if base_dir:
-            print
-            '    base_dir: %s' % base_dir
+            print '    base_dir: %s' % base_dir
         # 在 cwd 找所有 Job_*.dat
         try:
             jobs = [f for f in os.listdir(cwd) if f.startswith('Job_') and f.endswith('.dat')]
-            print
-            '  Job dat in cwd: %s' % jobs
-        except:
-            pass
+            print '  Job dat in cwd: %s' % jobs
+        except: pass
         return []
 
     zero_eids, bad_nids = _parse_dat_errors(dat_path)
-    print
-    '  zero-length eids: %s' % zero_eids
-    print
-    '  bad-embed nids:   %s' % bad_nids
+    print '  zero-length eids: %s' % zero_eids
+    print '  bad-embed nids:   %s' % bad_nids
 
     if not zero_eids and not bad_nids:
         return []
 
-    ranges, node_to_paths = _parse_inp_path_info(inp_path)
-    print
-    '  parsed %d BEAMPATH ranges, %d node-path mappings' % (
-        len(ranges), len(node_to_paths))
+    elem_to_pid, node_to_paths = _parse_inp_path_info(inp_path)
+    print '  parsed %d elem->path mappings (generate+explicit), %d node-path mappings' % (
+        len(elem_to_pid), len(node_to_paths))
 
     bad_inp_pids = set()
     for eid in zero_eids:
-        for pid, (lo, hi) in ranges.items():
-            if lo <= eid <= hi:
-                bad_inp_pids.add(pid);
-                break
+        if eid in elem_to_pid:
+            bad_inp_pids.add(elem_to_pid[eid])
+        else:
+            print '  [warn] flagged elem %d not found in any BEAMPATH elset' % eid
     for nid in bad_nids:
         if nid in node_to_paths:
             for pid in node_to_paths[nid]:
                 bad_inp_pids.add(pid)
 
-    print
-    '  bad inp BEAMPATH ids: %s' % sorted(bad_inp_pids)
+    print '  bad inp BEAMPATH ids: %s' % sorted(bad_inp_pids)
 
     current_blacklist = Config.BLACKLIST_PATH_IDX.get(cfg_name, [])
     new_orig_pids = []
@@ -2141,8 +2160,7 @@ def auto_diagnose(cfg_name, base_dir=None):
         orig = _map_inp_pid_to_orig(inp_pid, current_blacklist)
         if orig is not None and orig not in current_blacklist:
             new_orig_pids.append(orig)
-    print
-    '  new original path_idx to add: %s' % new_orig_pids
+    print '  new original path_idx to add: %s' % new_orig_pids
     return new_orig_pids
 
 
@@ -2234,156 +2252,125 @@ def _clear_job_lock(cfg_name, base_dir=None, max_wait=60):
     return True
 
 
-def _cleanup_job_files(cfg_name, max_wait=60):
-    """Clear stale lock + residual job files before a (re)submit.
-
-    Returns True if it is safe to submit (no lock blocking), False otherwise.
-    """
-    # 1) Lock first. If it cannot be cleared, do not touch anything else and
-    #    tell the caller it is NOT safe to submit (avoids 'Detected lock file').
-    if not _clear_job_lock(cfg_name, max_wait=max_wait):
-        print
-        '  [WARN] Could not clear lock for %s; submit would fail.' % cfg_name
-        print
-        '         Close any stray Abaqus solver, then retry, or run clean_config(%r).' % cfg_name
-        return False
-
-    # 2) Remove other residuals (safe now that the lock is gone).
-    #    IMPORTANT: also delete .dat and .inp. Otherwise, if a run aborts at the
-    #    solve stage (e.g. 'XML parsing failure') without rewriting the .dat,
-    #    auto_diagnose re-reads the OLD .dat, maps its stale bad-element IDs onto
-    #    whatever path now occupies that element number, and blacklists an
-    #    INNOCENT path -> blacklist never converges (this is exactly the
-    #    115-entry runaway). A fresh run regenerates both files, so deleting
-    #    them here is safe and makes diagnosis trustworthy.
+def _cleanup_job_files(cfg_name, max_wait=5):
+    """清理上次 Job 的 lck/odb/sta/msg 残留, 避免 'Detected lock file' 错误.
+    
+    .lck 可能被 Abaqus 进程占用导致删除失败, 这里加重试机制.
+    max_wait: 最多等待秒数让 Abaqus 释放 lck."""
+    import time as _time
     cwd = os.getcwd()
     job = 'Job_' + cfg_name
-    extensions = ['.odb', '.sta', '.msg', '.com', '.log', '.dat', '.inp',
+    extensions = ['.lck', '.odb', '.sta', '.msg', '.com', '.log',
                   '.prt', '.sim', '.023', '.mdl', '.stt', '.abq', '.pac', '.sel']
     cleaned = []
+    failed = []
     for ext in extensions:
         p = os.path.join(cwd, job + ext)
         if not os.path.exists(p):
             continue
-        try:
-            os.remove(p)
-            cleaned.append(ext)
-        except:
-            pass
+        # 重试删除最多 max_wait 秒
+        deleted = False
+        for retry in range(max_wait * 2):
+            try:
+                os.remove(p)
+                cleaned.append(ext)
+                deleted = True
+                break
+            except OSError:
+                _time.sleep(0.5)
+            except: break
+        if not deleted:
+            failed.append(ext)
     if cleaned:
-        print
-        '  Cleaned residual files: %s' % cleaned
-    return True
+        print '  Cleaned residual files: %s' % cleaned
+    if failed:
+        print '  [WARN] Could not clean (still locked): %s' % failed
+        print '         Try waiting a few seconds or close any running Abaqus jobs.'
 
 
-def run_with_auto_retry(cfg_names, max_retries=4):
+def run_with_auto_retry(cfg_names, max_retries=80):
     """跑指定 config, 每次失败自动诊断 + 扩 blacklist + 重试.
-
+    
     Args:
         cfg_names: list of config names ('planar_stream' / etc.)  or  single string
         max_retries: 每个 config 最多重试次数 (默认 4)
-
+    
     Returns:
         dict: {cfg_name: (final_status, final_blacklist)}
     """
     if isinstance(cfg_names, str):
         cfg_names = [cfg_names]
-
+    
     results = {}
     for cfg in cfg_names:
-        print
-        '\n' + '=' * 70
-        print
-        'AUTO-RETRY: %s' % cfg
-        print
-        '=' * 70
-
+        print '\n' + '=' * 70
+        print 'AUTO-RETRY: %s' % cfg
+        print '=' * 70
+        
         for attempt in range(1, max_retries + 2):
-            print
-            '\n--- Attempt %d/%d for %s ---' % (
+            print '\n--- Attempt %d/%d for %s ---' % (
                 attempt, max_retries + 1, cfg)
-            print
-            'Current blacklist: %s' % Config.BLACKLIST_PATH_IDX.get(cfg, [])
-
-            # Clear last run's lck/odb residue. If the lock can't be cleared,
-            # do NOT submit (it would just fail with 'Detected lock file').
-            if not _cleanup_job_files(cfg):
-                print
-                '*** Lock for %s could not be cleared; skipping this attempt. ***' % cfg
-                results[cfg] = ('LOCKED', Config.BLACKLIST_PATH_IDX.get(cfg, []))
-                break
-
+            print 'Current blacklist: %s' % Config.BLACKLIST_PATH_IDX.get(cfg, [])
+            
+            # 清理上次的 lck/odb 残留
+            _cleanup_job_files(cfg)
+            
             # 跑 single config
             try:
                 step2_run_batch_comparison(
                     configs=[(cfg, cfg)], submit=True, wait_each=True)
             except Exception, e:
-                print
-                'Submit failed: %s' % str(e)
+                print 'Submit failed: %s' % str(e)
                 results[cfg] = ('EXCEPTION', Config.BLACKLIST_PATH_IDX.get(cfg, []))
                 break
-
+            
             # 检查 status
             job_name = 'Job_' + cfg
             if job_name not in mdb.jobs.keys():
-                print
-                'Job %s does not exist' % job_name
+                print 'Job %s does not exist' % job_name
                 break
             status = mdb.jobs[job_name].status
-            print
-            'Job %s final status: %s' % (job_name, status)
-
+            print 'Job %s final status: %s' % (job_name, status)
+            
             if status == COMPLETED:
-                print
-                '*** SUCCESS for %s after %d attempt(s) ***' % (cfg, attempt)
+                print '*** SUCCESS for %s after %d attempt(s) ***' % (cfg, attempt)
                 results[cfg] = ('COMPLETED', Config.BLACKLIST_PATH_IDX.get(cfg, []))
                 break
-
+            
             # 失败 -> 自动诊断
             if attempt > max_retries:
-                print
-                '*** GIVE UP after %d attempts ***' % attempt
+                print '*** GIVE UP after %d attempts ***' % attempt
                 results[cfg] = ('FAILED_OUT_OF_RETRIES',
-                                Config.BLACKLIST_PATH_IDX.get(cfg, []))
+                                 Config.BLACKLIST_PATH_IDX.get(cfg, []))
                 break
-
+            
             new_pids = auto_diagnose(cfg)
             if not new_pids:
-                print
-                '*** No new path_idx found, cannot recover ***'
+                print '*** No new path_idx found, cannot recover ***'
                 results[cfg] = ('FAILED_NO_DIAGNOSE',
-                                Config.BLACKLIST_PATH_IDX.get(cfg, []))
+                                 Config.BLACKLIST_PATH_IDX.get(cfg, []))
                 break
-
+            
             # 扩 blacklist
             old_bl = list(Config.BLACKLIST_PATH_IDX.get(cfg, []))
             new_bl = sorted(set(old_bl + new_pids))
             Config.BLACKLIST_PATH_IDX[cfg] = new_bl
-            print
-            '  Updated %s blacklist: %s -> %s' % (cfg, old_bl, new_bl)
-
+            print '  Updated %s blacklist: %s -> %s' % (cfg, old_bl, new_bl)
+    
     # Summary
-    print
-    '\n' + '=' * 70
-    print
-    'AUTO-RETRY SUMMARY'
-    print
-    '=' * 70
+    print '\n' + '=' * 70
+    print 'AUTO-RETRY SUMMARY'
+    print '=' * 70
     for cfg, (status, bl) in results.items():
-        print
-        '  %-20s: %-25s blacklist=%s' % (cfg, status, bl)
+        print '  %-20s: %-25s blacklist=%s' % (cfg, status, bl)
     print
-    print
-    'IMPORTANT: blacklists are in-memory only.'
-    print
-    'For permanence, copy these into Config.BLACKLIST_PATH_IDX in source:'
+    print 'IMPORTANT: blacklists are in-memory only.'
+    print 'For permanence, copy these into Config.BLACKLIST_PATH_IDX in source:'
     for cfg, (status, bl) in results.items():
         if bl and status == 'COMPLETED':
-            print
-            "  '%s': %s," % (cfg, bl)
-    print
-    '=' * 70
-
+            print "  '%s': %s," % (cfg, bl)
+    print '=' * 70
+    
     return results
 
 

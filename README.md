@@ -276,13 +276,15 @@ abaqus python python/abaqus_odb_to_mat.py --odb job.odb --npz voxel_grid.npz \
 | **`run_full_comparison.m`** | **MATLAB 主驱动**（10 个 stage，skip-if-exists） |
 | `export_paths_to_fea.m` | 把 MATLAB 路径导出为 Abaqus 可吃的格式 |
 | `fix_paths_for_abaqus.m` | 修复路径中的零长 segment / 共线点 |
-| **`abaqus_cfrc_compare.py`** | **Abaqus 4-way job runner**（v15，PY2.7） |
+| **`abaqus_cfrc_compare.py`** | **Abaqus 4-way job runner**（PY2.7）；`auto_diagnose` / `run_with_auto_retry` 已做 autodiag 鲁棒性修复（见 §7） |
 | `extract_fea_results.py` | ODB → CSV（v2，history → field 自动 fallback） |
 | `compare_fea_results.m` | 4-way K / F-U / 雷达图 |
 | `run_compare.m` | `compare_fea_results` 的 launcher |
 | `diagnose_loadpoint.py` | 加载点诊断（写文件版本） |
 | **`compute_path_statistics.m`** | **路径几何统计**（长度 / 平滑段 / 应力对齐度，含 50% 阴影与截断 violin） |
 | `embedded_material_calculator.py` | 打印几何(w/t) + 实测表 3.1 → `HOST_E/HOST_NU/BEAM_E_RATIO` 嵌入单元材料参数（Py2.7/3；标定 `abaqus_cfrc_compare.py` 的 `Config`，见 `docs/embedded_material_calculator_usage.md`） |
+| `grind_serial_runner.py` | 串行 noGUI 自动重试驱动（`abaqus cae noGUI=grind_serial_runner.py`）：单进程串行跑 `run_with_auto_retry`，消除重试与求解器交叠产生的 .dat/.inp 竞态。批量重算走这个，别在交互 CAE 里跑重试循环 |
+| `tools_query_odb_errsets.py` | 诊断工具：查失败 odb 里 Abaqus 自存的 `ErrElem*` 单元集（真实单元号 / 连接 / 节点坐标 / 段长），比静态解析 .dat 文本可靠 |
 
 详见 [`docs/02_切片路径与FEA对比.md`](docs/02_切片路径与FEA对比.md)。
 
@@ -388,6 +390,7 @@ w = +sin(t_xoz)                ← 注意是 +，不是 −
 | run_full_comparison 管线（10 issues 一并修，详见 [`docs/03`](docs/03_管线修复链_REFINE3启用.md)） | v6 系列脚本 function 化消除 `clear; clc;` 把 wrapper 局部变量清光；double-side host cell 尺寸修复（MATLAB 写 `dx/dy/dz` 进 `mesh_params.txt`，Python 读取，修前 host 被放大 REFINE_FACTOR 倍）；path 脚本 X/Y 方向 scale 改用 `grid_index` 反推真实 `dx_phys`（修前激活区窄方向上 path span 偏小 ~40%）；SKIP sentinel 与 Abaqus 端对齐；host 缺失自动重建；`BEAM_MANUAL_OFFSET` 默认 `(0,0,0)`；Stage 9 自动拷 4 个 path mat + `compute_path_statistics.m` 到 fea_dir |
 | plotTopologyWithMedialAxis / plotTopologyWithMedialAxis2 / single_layer_test | 流线生成的材料阈值 `th = prctile(xold,(1-volfrac)*100)*1.2` 是为连续密度场（SIMP `xPhys∈[0,1]`）设计，但切片管线经 `extract_layer_2d_projection` 喂进来的是二值掩膜（`{0,1}`）。当某层 2D 填充率 ≥ (1-volfrac)=50% 时 `prctile=1`、`th=1.2`>掩膜最大值、`find(xold>th)` 返空 → 无材料掩膜 → 0 条流线 + 轮廓退化成全域矩形。修复：空结果时回退 `find(xold>0)`（任意材料像素），连续密度场下基本不触发；触发时也比"返空"合理。验证（同一切片数据重跑路径）：总流线 89→287，零流线层 36/59→0/59 |
 | extract_layer_2d_projection（源头方向翻转修复，配套滤波 / 流线引擎升级） | 现象：跨层方向场逐层翻转，"前层方向场翻"导致流线断裂、不沿主应力贯穿。**根因 1**：方向用 `t_xoy` 角度定义，但 `uu = cos(t_xoz)·cos(t_xoy)`，约一半体素 `cos(t_xoz)<0`，使 `t_xoy` 的符号相对真实 σ1 矢量翻 180° 且**逐层不一致**。**根因 2**：一列里多个 z 的体素投影到同一 `(ix,iy)` 时旧版做"最后写入"覆盖，厚切层方向场带噪。**修复**：(a) 用 `(uu, vv)` 的面内分量定义方向；(b) 同列 z 在双角度域 `(cos2φ, sin2φ)` 累加平均（正确处理线场 180° 歧义）；(c) 用有符号矢量均值把真实指向对齐回来。**配套升级**：`filter_orientation_field`（双边保边方向场滤波，替换 `filter_orientation_simple`）+ `trace_principal_streamlines`（双角度 RK2 积分 + 符号相干 + 最长优先等间距 + 自动对称化，替换 `plotTopologyWithMedialAxis`）。两条新算法链都带 `if` 守卫保留旧实现作 fallback（`field_filter_sigma=0` 或 `use_advanced_streamlines=false`） |
+| **abaqus_cfrc_compare autodiag** (2026-07) | `planar_stream` 自动重试永不收敛（打地鼠）。**根因**：`_parse_inp_path_info` 只解析 `generate` 格式 elset，漏掉"被过滤过的高危路径"所用的**显式列表**格式 → 报错单元映射不到路径 → `run_with_auto_retry` 误判"无法诊断"放弃。**修复**：两种 elset 格式都解析、范围字典升级为精确 `{elem_id:pid}` 映射、映射不到显式 `[warn]`；`grind_serial_runner.py` 串行化消除 .dat/.inp 竞态；`_write_beam_inp` 三处几何硬化（自闭合截断 / 跨路径防重合微移 / 最小段长 0.1→0.2mm）；`max_retries` 4→80。验证：0.8mm planar_stream 3 轮收敛 COMPLETED（78/5125 条拉黑，1.5%） |
 
 ---
 

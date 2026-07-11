@@ -4,6 +4,44 @@
 
 ---
 
+## 2026-07-11 — Abaqus 自动推进鲁棒性修复 (autodiag)
+
+### 背景
+`planar_stream`（平面切片+流线，0.8mm 线宽最难配置）在 Abaqus 输入处理阶段反复报零长梁/
+法线无法计算，`run_with_auto_retry` 每轮只能拉黑几条、永远差最后 1~3 个单元无法收敛（打
+地鼠），最终 `FAILED_NO_DIAGNOSE` 放弃。
+
+### 根因
+- **A（核心逻辑 bug）**：`_parse_inp_path_info` 只解析 `generate` 格式的 BEAMPATH elset，漏
+  掉**显式列表**格式——任何被过滤过一段（零长/平行 n1/截断）的路径就用显式列表。报错单元
+  恰落在这些"高危"路径里 → 范围扫描 `lo<=eid<=hi` 映射不到 → 直接放弃。
+- **B（并发竞态）**：重试不等上一轮 pre.exe 退出就重写 inp，旧 pre.exe 把描述旧 inp 的失败
+  .dat 留在新 inp 旁（判据：.dat 时间戳早于 .inp mtime），据此诊断必错。
+- **C（几何脆弱）**：流线 ~86% 是闭合回路 + 交叉共点 + 短段叠 z 跳，被 Abaqus 判为零长。
+
+### 改动
+- **abaqus_cfrc_compare.py（8 个函数整体替换，`Config` 不动）**：
+  - `_parse_inp_path_info`：两种 elset 格式都解析；返回值从范围字典升级为精确 `{elem_id: pid}`
+    映射（对非连续编号才正确）。
+  - `auto_diagnose`：字典查找 + 映射不到时 `[warn]`（静默失败 → 显式告警）。
+  - `_write_beam_inp`：三处几何硬化（自闭合截断、跨路径防重合微移 0.02mm 空间哈希、最小段长
+    0.1→0.2mm）。
+  - `run_with_auto_retry` / `_cleanup_job_files`：`max_retries` 4→80；清理逻辑同步。
+  - `_parse_dat_errors` / `_map_inp_pid_to_orig` / `_find_job_files`：配套。
+- **新增 `python/grind_serial_runner.py`**：`abaqus cae noGUI=` 单进程串行重试驱动，消除根因
+  B（不要在交互 CAE 里跑重试循环）。
+- **新增 `python/tools_query_odb_errsets.py`**：从失败 odb 读 Abaqus 自存的 ErrElem* 单元集
+  （.dat 文本单元号可能与文件级编号错位，以 odb 账本为准）。
+- **CFRC_App `runExport4`**：导出到 FEA dir 时一并复制上面两个新工具。
+- **README**：§4.5 收录两个工具、§7 加 autodiag 修复速查。
+
+### 验证
+0.8mm planar_stream（5125 条路径）3 轮收敛 COMPLETED（672MB odb）：第 1 轮 118 个坏单元 → 77
+条一次拉黑（含此前"隐形"的显式列表路径），第 2 轮 +1，第 3 轮 0 错误；最终拉黑 78/5125
+（1.5%，刚度影响可忽略）；其余 3 配置一次通过。`Config`（材料/BASE_DIR）保持仓库实测标定值不变。
+
+---
+
 ## 2026-07-08 — 材料体系标定: 嵌入单元参数改用实测 CFRC (表 3.1)
 
 ### 背景
